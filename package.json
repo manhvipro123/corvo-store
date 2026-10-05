@@ -9,12 +9,12 @@
     "lint": "eslint",
     "format": "prettier --write .",
     "typecheck": "next typegen && tsc --noEmit",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx src/db/run-seed.mts",
-    "db:studio": "drizzle-kit studio",
+    "db:generate": "node --env-file-if-exists=.env.local node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "node --env-file-if-exists=.env.local node_modules/drizzle-kit/bin.cjs migrate",
+    "db:seed": "tsx --env-file-if-exists=.env.local src/db/run-seed.mts",
+    "db:studio": "node --env-file-if-exists=.env.local node_modules/drizzle-kit/bin.cjs studio",
     "test": "vitest run --project unit",
-    "test:db": "vitest run --project db"
+    "test:db": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --project db"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",
@@ -32,7 +32,6 @@
     "@types/node": "^24.19.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "dotenv": "^18.0.5",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",

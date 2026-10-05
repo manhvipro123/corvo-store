@@ -27,6 +27,7 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 
 ## Database (Neon Postgres + Drizzle)
 
+- Read `process.env.DATABASE_URL` directly; never load `.env` files in code (no `dotenv`). Next loads them for the app; CLI scripts get them from `node --env-file-if-exists=.env.local` in `package.json`, so run DB tools via the npm scripts.
 - Pages and components read data only through `src/db/queries.ts`, which returns the UI types from `src/types/catalog.ts`; don't query Drizzle tables from components. DB modules are `server-only`, so client components get data via props.
 - Prices are integer cents, USD only (no currency column). Never store floats.
 - Stock lives in `product_stock` (1–1 with products), not on `products`. A missing stock row means sold out. Stock status (in/low/sold out) is derived by `getStockStatus`, never stored.

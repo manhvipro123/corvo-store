@@ -5,11 +5,7 @@
  *   npm run db:seed                       # uses DATABASE_URL
  *   SEED_DATABASE_URL=... npm run db:seed # e.g. another branch
  */
-import { config } from "dotenv";
-
 import { seed } from "./seed";
-
-config({ path: ".env.local", quiet: true });
 
 const url = process.env.SEED_DATABASE_URL ?? process.env.DATABASE_URL;
 if (!url) throw new Error("Set DATABASE_URL (or SEED_DATABASE_URL).");
