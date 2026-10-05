@@ -23,7 +23,7 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - Remote images go through `next/image` and their host must be in `images.remotePatterns` in `next.config.ts` (currently only Unsplash; build URLs with `unsplash()` in `src/lib/images.ts`). In Next 16 use `preload` for the LCP image — `priority` is deprecated.
 - `/products` filter state lives only in the URL (`?category=&color=a,b&sort=`). Parse and build hrefs with `src/lib/catalog.ts` (`parseFilters`, `filtersHref`, `categoryHref`) rather than hand-writing query strings; filtering/sorting happens in SQL. Filter controls are links, not client state.
 - `Container` takes `inset="page" | "tile" | "bleed"`. Titles/toolbars directly above an edge-to-edge product `Grid` use `tile` so they align with card captions.
-- Render product shots with `ProductImage` (`src/components/product/product-image.tsx`), not raw `next/image`. Source photos have mixed aspect ratios, so each `ImageAsset` sets `fit`: leave the default `contain` for cut-outs and landscape shots, set `"cover"` only for portrait photos with their own backdrop. The detail-page gallery always forces `contain`.
+- Render product shots with `ProductImage` (`src/components/product/product-image.tsx`), not raw `next/image`. Source photos have mixed aspect ratios, so each `ImageAsset` sets `fit`: leave the default `contain` for cut-outs and landscape shots, set `"cover"` only for portrait photos with their own backdrop. The detail-page gallery always forces `contain`. Contained shots sit on the `stage` token, which stays light in dark mode on purpose: `multiply` removes the photos' white backdrops only against a light colour, so don't switch it to `surface`.
 
 ## Database (Neon Postgres + Drizzle)
 
