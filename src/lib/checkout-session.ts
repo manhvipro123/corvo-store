@@ -43,6 +43,10 @@ export async function createCheckout(
         metadata: { order_id: order.id },
         customer_email: user.email,
         shipping_address_collection: { allowed_countries: ["US"] },
+        // We sell physical goods and ship them ourselves; Managed Payments
+        // (Stripe as merchant of record, on by default for new accounts)
+        // doesn't allow collecting a shipping address.
+        managed_payments: { enabled: false },
         expires_at: Math.floor(order.expiresAt.getTime() / 1000),
         // The success page only reads the order; the webhook confirms payment.
         success_url: `${siteURL()}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,

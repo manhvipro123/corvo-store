@@ -11,7 +11,14 @@ import { formatPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** One bag row: thumbnail, name and price, quantity, remove, line total. */
-export function BagLine({ line }: { line: Line }) {
+export function BagLine({
+  line,
+  eager = false,
+}: {
+  line: Line;
+  /** Above the fold: load the thumbnail right away (LCP candidate). */
+  eager?: boolean;
+}) {
   const { product, quantity, totalCents } = line;
   const soldOut = product.stock <= 0;
   const href = `/products/${product.slug}`;
@@ -29,6 +36,7 @@ export function BagLine({ line }: { line: Line }) {
           <ProductImage
             image={product.image}
             sizes="128px"
+            loading={eager ? "eager" : undefined}
             className={cn(soldOut && "opacity-60")}
           />
         </MediaFrame>

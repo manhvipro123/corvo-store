@@ -70,8 +70,8 @@ export default async function BagPage() {
       ) : (
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem] lg:gap-16">
           <ul aria-label="Items in your bag" className="border-border border-t">
-            {lines.map((line) => (
-              <BagLine key={line.product.id} line={line} />
+            {lines.map((line, i) => (
+              <BagLine key={line.product.id} line={line} eager={i < 3} />
             ))}
           </ul>
 

@@ -14,12 +14,15 @@ export function ProductImage({
   image,
   sizes,
   preload,
+  loading,
   fit = image.fit ?? "contain",
   className,
 }: {
   image: ImageAsset;
   sizes: string;
   preload?: boolean;
+  /** "eager" for above-the-fold shots when several could be the LCP. */
+  loading?: "eager" | "lazy";
   fit?: ImageAsset["fit"];
   className?: string;
 }) {
@@ -30,6 +33,7 @@ export function ProductImage({
       fill
       sizes={sizes}
       preload={preload}
+      loading={loading}
       className={cn(
         fit === "cover"
           ? "object-cover"

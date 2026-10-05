@@ -16,7 +16,7 @@ export function OrderSummary({ order }: { order: Order }) {
         Order summary
       </h2>
       <ul className="border-border border-t">
-        {order.lines.map((line) => (
+        {order.lines.map((line, i) => (
           <li
             key={line.productId}
             className="border-border flex gap-4 border-b py-6"
@@ -28,7 +28,11 @@ export function OrderSummary({ order }: { order: Order }) {
               className="w-20 shrink-0"
             >
               <MediaFrame>
-                <ProductImage image={line.image} sizes="80px" />
+                <ProductImage
+                  image={line.image}
+                  sizes="80px"
+                  loading={i < 3 ? "eager" : undefined}
+                />
               </MediaFrame>
             </Link>
             <div className="flex min-w-0 flex-1 justify-between gap-4">
