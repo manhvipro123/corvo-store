@@ -23,7 +23,7 @@ export default async function HomePage() {
       <ProductShowcase
         title="New arrivals"
         products={newArrivals}
-        action={{ label: "View all", href: "/products" }}
+        action={{ label: "View all", href: "/new-arrivals" }}
       />
       <FeaturedCollections />
       <ProductFeature

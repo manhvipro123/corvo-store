@@ -3,6 +3,7 @@ import { ArrowRight } from "lucide-react";
 
 import { Container } from "@/components/ui/container";
 import { Section } from "@/components/ui/section";
+import { TextLink } from "@/components/ui/text-link";
 import { getCategories } from "@/db/queries";
 import { categoryHref } from "@/lib/catalog";
 
@@ -13,9 +14,14 @@ export async function CategoryIndex() {
   return (
     <Section aria-labelledby="category-index-title">
       <Container className="grid gap-6 lg:grid-cols-4 lg:gap-8">
-        <h2 id="category-index-title" className="text-heading lg:pt-6">
-          Shop by category
-        </h2>
+        <div className="flex items-end justify-between gap-4 lg:flex-col lg:items-start lg:justify-start lg:gap-4 lg:pt-6">
+          <h2 id="category-index-title" className="text-heading">
+            Shop by category
+          </h2>
+          <TextLink variant="action" href="/categories">
+            View all
+          </TextLink>
+        </div>
         <ul className="border-border border-t lg:col-span-3">
           {categories.map((category, index) => (
             <li key={category.slug} className="border-border border-b">

@@ -4,11 +4,17 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+
+import type { Order } from "@/types/catalog";
+
+import { users } from "./auth-schema";
 
 export const productColor = pgEnum("product_color", [
   "black",
@@ -89,6 +95,87 @@ export const productStock = pgTable(
   ],
 );
 
+/**
+ * pending: stock reserved, awaiting payment. processing: Checkout completed,
+ * delayed payment method still clearing. Only verified Stripe data moves an
+ * order between states (see src/lib/checkout.ts).
+ */
+export const orderStatus = pgEnum("order_status", [
+  "pending",
+  "processing",
+  "paid",
+  "failed",
+  "expired",
+]);
+
+/** Shipping details copied from the completed Checkout Session. */
+export type OrderShipping = NonNullable<Order["shipping"]>;
+
+export const orders = pgTable(
+  "orders",
+  {
+    /** Server-generated UUID; also the Stripe idempotency key. */
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    status: orderStatus("status").notNull().default("pending"),
+    /** Whole cents, USD, from our prices at checkout time. */
+    subtotalCents: integer("subtotal_cents").notNull(),
+    /** What Stripe charged (`amount_total`), set once paid. */
+    totalCents: integer("total_cents"),
+    stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    email: text("email"),
+    shipping: jsonb("shipping").$type<OrderShipping>(),
+    /** When the reservation (and the Checkout Session) lapses. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    check("orders_subtotal_cents_non_negative", sql`${t.subtotalCents} >= 0`),
+    check(
+      "orders_total_cents_non_negative",
+      sql`${t.totalCents} is null or ${t.totalCents} >= 0`,
+    ),
+    index("orders_user_id_idx").on(t.userId),
+    index("orders_status_expires_at_idx").on(t.status, t.expiresAt),
+  ],
+);
+
+/** Price and name are snapshots: later catalog edits don't change orders. */
+export const orderItems = pgTable(
+  "order_items",
+  {
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "restrict" }),
+    productName: text("product_name").notNull(),
+    productSku: text("product_sku").notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    quantity: integer("quantity").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orderId, t.productId] }),
+    check("order_items_quantity_positive", sql`${t.quantity} > 0`),
+    check(
+      "order_items_unit_price_cents_non_negative",
+      sql`${t.unitPriceCents} >= 0`,
+    ),
+  ],
+);
+
+/** Stripe event ids already handled, so retried deliveries are skipped. */
+export const stripeEvents = pgTable("stripe_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  createdAt: timestamps.createdAt,
+});
+
 export const categoriesRelations = relations(categories, ({ many }) => ({
   products: many(products),
 }));
@@ -108,5 +195,16 @@ export const productStockRelations = relations(productStock, ({ one }) => ({
   product: one(products, {
     fields: [productStock.productId],
     references: [products.id],
+  }),
+}));
+
+export const ordersRelations = relations(orders, ({ many }) => ({
+  items: many(orderItems),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderItems.orderId],
+    references: [orders.id],
   }),
 }));

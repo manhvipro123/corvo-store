@@ -6,7 +6,13 @@ import { neon } from "@neondatabase/serverless";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 
-import { categories, productStock, products } from "./schema";
+import {
+  categories,
+  orderItems,
+  orders,
+  productStock,
+  products,
+} from "./schema";
 import { seedCategories, seedProducts } from "./seed-data";
 
 /** Gap between positions so items can later be slotted in between. */
@@ -17,9 +23,11 @@ export async function seed(url: string) {
   const db = drizzle(neon(url));
 
   // One HTTP batch = one transaction: all of it applies, or none.
+  // Orders go too: product ids restart, so old order lines would point at
+  // the wrong pieces.
   await db.batch([
     db.execute(
-      sql`truncate table ${productStock}, ${products}, ${categories} restart identity cascade`,
+      sql`truncate table ${orderItems}, ${orders}, ${productStock}, ${products}, ${categories} restart identity cascade`,
     ),
     db.insert(categories).values(
       seedCategories.map((c, i) => ({

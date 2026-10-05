@@ -94,6 +94,96 @@ describe.skipIf(!url)("catalog queries (test database)", () => {
     ]);
   });
 
+  it("returns every new arrival when no limit is given", async () => {
+    const products = await q.getNewArrivals();
+    expect(products).toHaveLength(6);
+    expect(products.every((p) => p.isNew)).toBe(true);
+    expect(products.slice(0, 4).map((p) => p.slug)).toEqual(
+      (await q.getNewArrivals(4)).map((p) => p.slug),
+    );
+  });
+
+  describe("search", () => {
+    const search = async (query: string, extra = {}) =>
+      (await q.getProducts({ ...defaultFilters, ...extra, query })).map(
+        (p) => p.slug,
+      );
+
+    it("matches name, category, colour, description and details", async () => {
+      expect(await search("tote")).toEqual(["tote-tan"]);
+      expect(await search("JEWELRY")).toEqual([
+        "diamond-ring-gold",
+        "stacking-rings-gold",
+      ]);
+      // Only in `details` ("Supple lambskin").
+      expect(await search("lambskin")).toEqual(["slouch-bag-noir"]);
+      expect(await search("nothing-like-this")).toEqual([]);
+      expect(await search("")).toEqual([]);
+    });
+
+    it("requires every term to match", async () => {
+      expect(await search("black bag")).toEqual(["slouch-bag-noir"]);
+      expect(await search("lambskin gold")).toEqual([]);
+    });
+
+    it("ranks name matches above description-only matches", async () => {
+      const results = await q.getProducts({
+        ...defaultFilters,
+        query: "leather",
+      });
+      const firstNonName = results.findIndex(
+        (p) => !p.name.toLowerCase().includes("leather"),
+      );
+      expect(firstNonName).toBeGreaterThan(0);
+      expect(
+        results
+          .slice(firstNonName)
+          .every((p) => !p.name.toLowerCase().includes("leather")),
+      ).toBe(true);
+    });
+
+    it("combines the query with category, colour and sort", async () => {
+      const shoes = await q.getProducts({
+        ...defaultFilters,
+        query: "leather",
+        category: "shoes",
+        sort: "price-asc",
+      });
+      expect(shoes.length).toBeGreaterThan(0);
+      expect(shoes.every((p) => p.category === "shoes")).toBe(true);
+      expect(shoes.map((p) => p.priceCents)).toEqual(
+        shoes.map((p) => p.priceCents).toSorted((a, b) => a - b),
+      );
+      expect(await search("leather", { colors: ["gold"] })).toEqual([]);
+    });
+
+    it("treats LIKE wildcards in a query literally", async () => {
+      // "%" matches only the details that literally contain it ("100% …"),
+      // not the whole catalog as a wildcard would.
+      const percent = await q.getProducts({ ...defaultFilters, query: "%" });
+      expect(percent).toHaveLength(6);
+      expect(percent.every((p) => p.details.some((d) => d.includes("%")))).toBe(
+        true,
+      );
+      expect(await search("_")).toEqual([]);
+    });
+  });
+
+  it("loads bag products by id with live price and stock", async () => {
+    const shirt = await q.getProductBySlug("poplin-shirt-white");
+    expect(shirt).toBeDefined();
+    await db.execute(
+      sql`update product_stock set quantity = 2 where product_id = ${shirt!.id}`,
+    );
+    const [loaded] = await q.getBagProducts([shirt!.id, 999_999]);
+    expect(loaded).toMatchObject({
+      id: shirt!.id,
+      priceCents: shirt!.priceCents,
+      stock: 2,
+    });
+    expect(await q.getBagProducts([])).toEqual([]);
+  });
+
   it("puts same-category products first in related", async () => {
     const product = (await q.getProductBySlug("slingback-pump-noir"))!;
     const related = await q.getRelatedProducts(product, 4);

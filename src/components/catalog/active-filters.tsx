@@ -6,12 +6,13 @@ import { colors } from "@/lib/colors";
 import {
   type CatalogFilters,
   filtersHref,
-  sortOptions,
+  sortLabel,
   toggleColor,
 } from "@/lib/catalog";
 
 /**
- * One status line above the grid: result count and current sort on the
+ * One status line above the grid: result count (for the search query, if
+ * any) and current sort on the
  * left, removable colour chips on the right. Always the same height, so the
  * grid doesn't shift when filters are added or cleared.
  */
@@ -22,13 +23,16 @@ export function ActiveFilters({
   filters: CatalogFilters;
   resultCount: number;
 }) {
-  const sortLabel = sortOptions.find((o) => o.value === filters.sort)?.label;
-
   return (
     <div className="flex min-h-14 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-3">
-      <p className="text-meta text-muted tabular-nums">
-        {resultCount} {resultCount === 1 ? "item" : "items"}
-        <span className="max-sm:hidden"> · Sorted by {sortLabel}</span>
+      <p className="text-meta text-muted tabular-nums" aria-live="polite">
+        {resultCount}{" "}
+        {filters.query
+          ? `${resultCount === 1 ? "result" : "results"} for “${filters.query}”`
+          : resultCount === 1
+            ? "item"
+            : "items"}
+        <span className="max-sm:hidden"> · Sorted by {sortLabel(filters)}</span>
       </p>
 
       {filters.colors.length > 0 && (

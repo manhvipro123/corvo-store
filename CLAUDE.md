@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Scope
 
-A deliberately minimal ecommerce storefront. The database covers only categories, products and stock. Do not add auth, cart, orders, payments, wishlists, reviews, warehouses, product variants or admin features unless explicitly asked.
+A deliberately minimal ecommerce storefront. The database covers categories, products, stock and Better Auth email/password accounts with an admin role. There is a cookie-based bag and Stripe Checkout (orders, no order history or refunds yet). Do not add social login, password reset, email verification, 2FA, order history, refunds, wishlists, reviews, warehouses, product variants or admin management UI unless explicitly asked.
 
 ## Verifying changes
 
-Verify with `npm run lint && npm run typecheck && npm test && npm run build`; run `npm run test:db` when touching queries or the schema. `typecheck` runs `next typegen` first so `PageProps<"/new/route">` exists for new routes. `next build` needs `DATABASE_URL` (pages prerender from the DB).
+Verify with `npm run lint && npm run typecheck && npm test && npm run build`; run `npm run test:db` when touching queries or the schema. `typecheck` runs `next typegen` first so `PageProps<"/new/route">` exists for new routes. `next build` and `next start` need `DATABASE_URL`, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`.
 
 ## Conventions
 
@@ -38,3 +38,30 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - `npm run db:seed` truncates and reloads all catalog tables: dev/test only. `TEST_DATABASE_URL` must be a separate Neon branch; `test:db` truncates and reseeds it on every run.
 - Scripts run outside Next (seed, test setup) must create their own Drizzle client; importing `src/db/index.ts` throws there (`server-only`).
 - `/` and `/products/[slug]` revalidate every 60s, so DB edits show there within a minute; `/products` reads live.
+
+## Auth (Better Auth)
+
+- Every protected page or Server Action calls `requireUser(path)` / `requireAdmin(path)` itself. `src/proxy.ts` is only an optimistic cookie check, and a check in a layout alone isn't enough.
+- Non-admins get a 404 from admin routes, not a redirect, so their existence isn't revealed.
+- Never read the session in the header, root layout or cached pages (`/`, `/products/[slug]`, `/new-arrivals`, `/categories`); it makes them dynamic. Link to `/account` instead.
+- No auth client in the browser: all auth flows are Server Actions calling `auth.api.*`. `nextCookies()` stays the last plugin, and `callbackURL` redirects go through `safeCallbackURL`.
+- A Server Action's re-render still sees the request's old cookie, so don't replace the current session mid-action (e.g. `changePassword({ revokeOtherSessions: true })`); call `revokeOtherSessions` separately.
+- Sign-in errors stay generic ("Email or password is incorrect") so they don't reveal which emails exist. Field rules live in `src/lib/auth-validation.ts`, shared by forms, actions and Better Auth's limits.
+- `cookieCache` is off on purpose: every session read hits the DB, so role and ban changes apply immediately.
+- After changing `src/lib/auth-options.ts`: `npm run auth:generate` → `npm run db:generate -- --name <change>` → `npm run db:migrate`.
+- Auth tables use text ids and aren't related to catalog tables; `db:seed` never touches them. Bootstrap the first admin with `npm run auth:make-admin -- <email>`.
+
+## Bag
+
+- The bag is the httpOnly `corvo_bag` cookie holding only product ids and quantities. Never put prices, names or stock in it; always re-check with `loadBag()` / `buildBag` against the DB.
+- Only Server Actions can write it; `/bag` shows the normalised bag and the next action stores it. The header never reads the bag on the server (cached pages would turn dynamic): its count comes from the client-readable `corvo_bag_count` cookie that `writeBag` sets, and `BagCountSync` on `/bag` corrects it.
+- Stock checks in the bag are advisory, not reservations; checkout reserves (below).
+
+## Checkout (Stripe)
+
+- Nothing price- or status-related comes from the browser. Line items are built with `price_data` from DB prices (no Stripe Products/Prices). Only the signature-verified webhook confirms payment (`syncCheckoutSession`); Stripe's success redirect lands on `/checkout/success`, which only reads the order (looked up by session id + user) and polls while it's pending. The bag is cleared only after the DB shows the order paid/processing (`finishCheckout`).
+- Stock is reserved when checkout starts: `reserveOrder` inserts the order and decrements every line in one `db.batch`; the `quantity >= 0` check rolls it all back when stock is short. Keep the decrements sorted by product id.
+- Order moves are conditional (`WHERE status IN (...)`, see `transitionFor`), so replayed or out-of-order events are no-ops. Stock goes back only through `releaseOrder`, whose single CTE releases at most once.
+- Webhook events are recorded in `stripe_events` in the same batch as their effect. The webhook route stays out of the proxy matcher; its signature is its auth.
+- Before releasing a pending order's stock yourself, expire its session and sync from Stripe (`cancelPendingCheckout`): it may have just been paid.
+- Locally: `stripe listen --forward-to localhost:3000/api/stripe/webhook` and put its `whsec_…` in `STRIPE_WEBHOOK_SECRET`.

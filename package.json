@@ -14,10 +14,13 @@
     "db:seed": "tsx --env-file-if-exists=.env.local src/db/run-seed.mts",
     "db:studio": "node --env-file-if-exists=.env.local node_modules/drizzle-kit/bin.cjs studio",
     "test": "vitest run --project unit",
-    "test:db": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --project db"
+    "test:db": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --project db",
+    "auth:generate": "npx --yes auth@1.7.7 generate --config src/lib/auth.cli.ts --output src/db/auth-schema.ts --yes",
+    "auth:make-admin": "tsx --env-file-if-exists=.env.local src/db/run-grant-admin.mts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",
+    "better-auth": "^1.7.7",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.3",
     "lucide-react": "^1.52.0",
@@ -25,6 +28,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",
+    "stripe": "^23.0.0",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
