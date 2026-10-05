@@ -44,9 +44,9 @@ export default async function NewArrivalsPage() {
       {products.length > 0 ? (
         <Container inset="bleed">
           <Grid>
-            {products.map((product) => (
+            {products.map((product, i) => (
               <li key={product.slug}>
-                <ProductCard product={product} />
+                <ProductCard eager={i < 4} product={product} />
               </li>
             ))}
           </Grid>

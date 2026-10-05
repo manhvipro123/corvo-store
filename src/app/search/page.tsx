@@ -6,14 +6,16 @@ import { CategoryTabs } from "@/components/catalog/category-tabs";
 import { FilterSheet } from "@/components/catalog/filter-sheet";
 import { SearchForm } from "@/components/catalog/search-form";
 import { ProductCard } from "@/components/product/product-card";
+import { ProductShowcase } from "@/components/product/product-showcase";
 import { buttonVariants } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { Grid } from "@/components/ui/grid";
 import { TextLink } from "@/components/ui/text-link";
-import { getCategories, getProducts } from "@/db/queries";
+import { getCategories, getNewArrivals, getProducts } from "@/db/queries";
 import { categoryHref, filtersHref, parseFilters } from "@/lib/catalog";
 import { normalizeQuery } from "@/lib/search";
-import type { Category } from "@/types/catalog";
+import { cn } from "@/lib/utils";
+import type { Category, Product } from "@/types/catalog";
 
 export async function generateMetadata({
   searchParams,
@@ -43,6 +45,10 @@ export default async function SearchPage({
   };
   const results = query ? await getProducts(filters) : [];
   const filtered = Boolean(filters.category || filters.colors.length);
+  // Something to look at when there's nothing to show yet (no query, or no
+  // match): the latest pieces, one row.
+  const suggestions =
+    !query || (!results.length && !filtered) ? await getNewArrivals(4) : [];
 
   return (
     <>
@@ -56,9 +62,12 @@ export default async function SearchPage({
       </Container>
 
       {!query ? (
-        <Container inset="tile" className="pt-4 pb-24">
-          <BrowseCategories categories={categories} />
-        </Container>
+        <>
+          <Container inset="tile" className="pt-4">
+            <BrowseCategories categories={categories} />
+          </Container>
+          <Suggestions products={suggestions} />
+        </>
       ) : (
         <>
           {/* Same sticky toolbar as /products; every link keeps the query. */}
@@ -76,9 +85,10 @@ export default async function SearchPage({
           {results.length > 0 ? (
             <Container inset="bleed">
               <Grid>
-                {results.map((product) => (
+                {results.map((product, i) => (
                   <li key={product.slug}>
                     <ProductCard
+                      eager={i < 4}
                       product={product}
                       showCategory={!filters.category}
                     />
@@ -89,7 +99,10 @@ export default async function SearchPage({
           ) : (
             <Container
               inset="tile"
-              className="flex flex-col items-start gap-8 pt-16 pb-24"
+              className={cn(
+                "flex flex-col items-start gap-8 pt-16",
+                filtered && "pb-24",
+              )}
             >
               <div className="flex flex-col items-start gap-4">
                 <p className="text-title">No pieces match “{query}”.</p>
@@ -122,9 +135,25 @@ export default async function SearchPage({
               {!filtered && <BrowseCategories categories={categories} />}
             </Container>
           )}
+          {!results.length && <Suggestions products={suggestions} />}
         </>
       )}
     </>
+  );
+}
+
+function Suggestions({ products }: { products: Product[] }) {
+  if (!products.length) return null;
+  return (
+    <div className="border-border mt-12 border-t md:mt-16">
+      <ProductShowcase
+        title="New arrivals"
+        description="The latest pieces to join the collection."
+        products={products}
+        action={{ label: "View all", href: "/new-arrivals" }}
+        eager
+      />
+    </div>
   );
 }
 

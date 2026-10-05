@@ -1,4 +1,5 @@
 import { ProductCard } from "@/components/product/product-card";
+import { ViewAllTile } from "@/components/product/view-all-tile";
 import { Container } from "@/components/ui/container";
 import { Grid } from "@/components/ui/grid";
 import { Section } from "@/components/ui/section";
@@ -11,14 +12,20 @@ export function ProductShowcase({
   description,
   products,
   action,
+  viewAll,
   showCategory,
+  eager,
 }: {
   title: string;
   description?: string;
   products: Product[];
   action?: { label: string; href: string };
+  /** Closing "Shop all" tile for the whole collection (fills the row). */
+  viewAll?: { href: string; title: string; count: number };
   /** Pass false when the whole row is one category. */
   showCategory?: boolean;
+  /** The row is above the fold: load its images now. */
+  eager?: boolean;
 }) {
   return (
     // No bottom padding: the cards' own caption space closes the section.
@@ -34,9 +41,14 @@ export function ProductShowcase({
         <Grid>
           {products.map((product) => (
             <li key={product.slug}>
-              <ProductCard product={product} showCategory={showCategory} />
+              <ProductCard
+                product={product}
+                showCategory={showCategory}
+                eager={eager}
+              />
             </li>
           ))}
+          {viewAll && <ViewAllTile {...viewAll} cardCount={products.length} />}
         </Grid>
       </Container>
     </Section>

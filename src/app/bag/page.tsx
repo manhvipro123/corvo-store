@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { CircleAlert, Lock } from "lucide-react";
+import Link from "next/link";
 
 import { BagCountSync } from "@/components/bag/bag-count";
 import { BagLine } from "@/components/bag/bag-line";
 import { CheckoutButton } from "@/components/bag/checkout-button";
+import { buttonVariants } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
-import { TextLink } from "@/components/ui/text-link";
-import { siteConfig } from "@/config/site";
 import { loadBag } from "@/lib/bag-cookie";
 import { RESERVATION_MINUTES } from "@/lib/checkout";
 import { formatPrice } from "@/lib/format";
@@ -55,17 +55,21 @@ export default async function BagPage() {
       )}
 
       {lines.length === 0 ? (
-        <div className="flex flex-col gap-6">
-          <p className="text-body text-muted">Your bag is empty.</p>
-          <ul className="flex flex-wrap gap-x-8 gap-y-3">
-            {siteConfig.nav.map((item) => (
-              <li key={item.href}>
-                <TextLink variant="action" href={item.href}>
-                  {item.label}
-                </TextLink>
-              </li>
-            ))}
-          </ul>
+        // Same empty-state pattern as the catalog pages.
+        <div className="flex flex-col items-start gap-4">
+          <p className="text-title">Your bag is empty.</p>
+          <p className="text-body text-muted max-w-prose">
+            Pieces you add will wait here until you check out.
+          </p>
+          <Link
+            href="/products"
+            className={buttonVariants({
+              variant: "secondary",
+              className: "mt-2",
+            })}
+          >
+            Shop all
+          </Link>
         </div>
       ) : (
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem] lg:gap-16">

@@ -14,8 +14,11 @@ export const metadata: Metadata = {
 // Static, refreshed from the database at most once a minute (as the homepage).
 export const revalidate = 60;
 
-/** Products shown per category: one full row on desktop. */
-const PREVIEW_COUNT = 4;
+/**
+ * Products shown per category; a "Shop all" tile completes the row, so
+ * each category is one full row on desktop and two on mobile.
+ */
+const PREVIEW_COUNT = 3;
 
 export default async function CategoriesPage() {
   const [categories, products] = await Promise.all([
@@ -44,14 +47,19 @@ export default async function CategoriesPage() {
       </Container>
 
       <div className="border-border border-t">
-        {collections.map((collection) => (
+        {collections.map((collection, i) => (
           <ProductShowcase
             key={collection.slug}
-            title={`${collection.name} (${collection.products.length})`}
+            title={collection.name}
             description={collection.description}
             products={collection.products.slice(0, PREVIEW_COUNT)}
-            action={{ label: "Shop all", href: categoryHref(collection.slug) }}
+            viewAll={{
+              href: categoryHref(collection.slug),
+              title: collection.name,
+              count: collection.products.length,
+            }}
             showCategory={false}
+            eager={i === 0}
           />
         ))}
       </div>
