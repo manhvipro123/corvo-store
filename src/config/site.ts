@@ -8,6 +8,7 @@ export const siteConfig = {
   /** Sections of the signed-in customer area (`/account`). */
   accountNav: [
     { label: "Overview", href: "/account" },
+    { label: "Orders", href: "/account/orders" },
     { label: "Account details", href: "/account/details" },
   ],
 } as const;

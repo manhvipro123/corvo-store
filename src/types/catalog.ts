@@ -87,3 +87,13 @@ export type Order = {
   createdAt: Date;
   lines: OrderLine[];
 };
+
+/** One row of the account's order history. */
+export type OrderListItem = {
+  id: string;
+  status: OrderStatus;
+  createdAt: Date;
+  itemCount: number;
+  /** What Stripe charged, or our subtotal while not yet charged. */
+  totalCents: number;
+};

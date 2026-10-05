@@ -173,4 +173,80 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
       await sql`select count(*)::int as n from stripe_events where id = ${event.id}`;
     expect(events[0].n).toBe(1);
   });
+
+  it("lists only the user's own placed orders, newest first", async () => {
+    const queries = await import("@/db/queries");
+    const pump = await product("slingback-pump-noir", 10);
+    const other = `${userId}-other`;
+    await sql`insert into users (id, name, email, created_at, updated_at)
+              values (${other}, 'Other', ${`${other}@example.test`}, now(), now())`;
+    try {
+      const reserve = (uid: string, quantity: number) =>
+        orders.reserveOrder({ userId: uid, lines: [{ ...pump, quantity }] });
+      const older = await reserve(userId, 2);
+      const newer = await reserve(userId, 1);
+      const abandoned = await reserve(userId, 1);
+      const theirs = await reserve(other, 1);
+      await sql`update orders set created_at = now() - interval '1 day' where id = ${older.id}`;
+      await sql`update orders set status = 'paid', total_cents = 123 where id = ${older.id}`;
+      await sql`update orders set status = 'failed' where id = ${newer.id}`;
+      await sql`update orders set status = 'paid' where id = ${theirs.id}`;
+      await orders.releaseOrder(abandoned.id, {
+        to: "expired",
+        from: ["pending"],
+      });
+
+      const list = await queries.getOrdersForUser(userId);
+      const ids = list.map((o) => o.id);
+      expect(ids).not.toContain(theirs.id);
+      expect(ids).not.toContain(abandoned.id);
+      expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
+      expect(list.find((o) => o.id === older.id)).toMatchObject({
+        status: "paid",
+        itemCount: 2,
+        totalCents: 123,
+      });
+      expect(list.find((o) => o.id === newer.id)).toMatchObject({
+        status: "failed",
+        totalCents: pump.unitPriceCents,
+      });
+
+      expect(
+        await queries.getOrderForUser({ orderId: theirs.id }, userId),
+      ).toBeUndefined();
+    } finally {
+      await sql`delete from orders where user_id = ${other}`;
+      await sql`delete from users where id = ${other}`;
+    }
+  });
+
+  it("shows the order as charged, only to its owner, after a price change", async () => {
+    const queries = await import("@/db/queries");
+    const pump = await product("slingback-pump-noir", 10);
+    const order = await orders.reserveOrder({
+      userId,
+      lines: [{ ...pump, quantity: 2 }],
+    });
+    await sql`update products set price_cents = price_cents + 50000 where id = ${pump.productId}`;
+    try {
+      const detail = await queries.getOrderForUser(
+        { orderId: order.id },
+        userId,
+      );
+      expect(detail?.lines).toEqual([
+        expect.objectContaining({
+          productId: pump.productId,
+          sku: pump.sku,
+          unitPriceCents: pump.unitPriceCents,
+          quantity: 2,
+        }),
+      ]);
+      expect(detail?.subtotalCents).toBe(pump.unitPriceCents * 2);
+      expect(
+        await queries.getOrderForUser({ orderId: order.id }, "someone-else"),
+      ).toBeUndefined();
+    } finally {
+      await sql`update products set price_cents = price_cents - 50000 where id = ${pump.productId}`;
+    }
+  });
 });

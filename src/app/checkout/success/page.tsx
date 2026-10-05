@@ -9,6 +9,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { TextLink } from "@/components/ui/text-link";
 import { getOrderForUser } from "@/db/queries";
+import { orderNumber } from "@/lib/orders";
 import { requireUser } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { OrderStatus } from "@/types/catalog";
@@ -94,7 +95,7 @@ export default async function CheckoutSuccessPage({
         </div>
         <OrderStatusWatcher status={order.status} />
         <p className="text-meta text-muted mt-6">
-          Order {order.id.slice(0, 8).toUpperCase()}
+          Order {orderNumber(order.id)}
           {order.email && <> · Confirmation to {order.email}</>}
         </p>
 

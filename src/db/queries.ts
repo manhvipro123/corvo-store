@@ -23,7 +23,8 @@ import {
 } from "@/db/schema";
 import type { CatalogFilters } from "@/lib/catalog";
 import { escapeLike, searchTerms } from "@/lib/search";
-import type { Category, Order, Product } from "@/types/catalog";
+import { HISTORY_STATUSES } from "@/lib/orders";
+import type { Category, Order, OrderListItem, Product } from "@/types/catalog";
 
 /** Columns every product query selects; mapped to the UI `Product` type. */
 const productColumns = {
@@ -243,4 +244,32 @@ export async function getOrderForUser(
       image: { src: imageUrl, alt: imageAlt, fit: imageFit },
     })),
   };
+}
+
+/** The user's order history, newest first; never other users' orders. */
+export async function getOrdersForUser(
+  userId: string,
+): Promise<OrderListItem[]> {
+  return db
+    .select({
+      id: orders.id,
+      status: orders.status,
+      createdAt: orders.createdAt,
+      itemCount: sql<number>`(
+        select coalesce(sum(${orderItems.quantity}), 0)
+        from ${orderItems} where ${orderItems.orderId} = ${orders.id}
+      )`.mapWith(Number),
+      totalCents:
+        sql<number>`coalesce(${orders.totalCents}, ${orders.subtotalCents})`.mapWith(
+          Number,
+        ),
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.userId, userId),
+        inArray(orders.status, [...HISTORY_STATUSES]),
+      ),
+    )
+    .orderBy(desc(orders.createdAt));
 }

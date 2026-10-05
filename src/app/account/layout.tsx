@@ -23,7 +23,7 @@ export default async function AccountLayout({
         <p className="text-body text-muted mt-2">Hello, {user.name}.</p>
       </header>
 
-      <div className="grid gap-10 lg:grid-cols-[14rem_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:gap-x-16 lg:gap-y-10">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[14rem_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:gap-x-16 lg:gap-y-10">
         <AccountNav showAdmin={isAdmin(user.role)} />
 
         <div className="max-w-2xl lg:col-start-2 lg:row-span-2 lg:row-start-1">

@@ -5,7 +5,10 @@ import { MediaFrame } from "@/components/ui/media-frame";
 import { formatPrice } from "@/lib/format";
 import type { Order } from "@/types/catalog";
 
-/** Order lines, quantities and totals as stored on our side. */
+/**
+ * Order lines (snapshot name, SKU and unit price as charged), quantities and
+ * totals as stored on our side.
+ */
 export function OrderSummary({ order }: { order: Order }) {
   const address = order.shipping?.address;
   const itemCount = order.lines.reduce((sum, l) => sum + l.quantity, 0);
@@ -16,7 +19,7 @@ export function OrderSummary({ order }: { order: Order }) {
         Order summary
       </h2>
       <ul className="border-border border-t">
-        {order.lines.map((line, i) => (
+        {order.lines.map((line) => (
           <li
             key={line.productId}
             className="border-border flex gap-4 border-b py-6"
@@ -31,7 +34,9 @@ export function OrderSummary({ order }: { order: Order }) {
                 <ProductImage
                   image={line.image}
                   sizes="80px"
-                  loading={i < 3 ? "eager" : undefined}
+                  // Small and few per order: load all now, so a later
+                  // cover-cropped shot can't become a lazy LCP.
+                  loading="eager"
                 />
               </MediaFrame>
             </Link>
@@ -43,11 +48,24 @@ export function OrderSummary({ order }: { order: Order }) {
                 >
                   {line.name}
                 </Link>
-                <p className="text-meta text-muted">
-                  {formatPrice(line.unitPriceCents)} × {line.quantity}
-                </p>
+                <p className="text-meta text-muted">Style {line.sku}</p>
+                <dl className="text-meta text-muted mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                  <div className="flex gap-1">
+                    <dt>Unit price</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {formatPrice(line.unitPriceCents)}
+                    </dd>
+                  </div>
+                  <div className="flex gap-1">
+                    <dt>Qty</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {line.quantity}
+                    </dd>
+                  </div>
+                </dl>
               </div>
               <p className="text-meta shrink-0 font-medium tabular-nums">
+                <span className="sr-only">Line total </span>
                 {formatPrice(line.unitPriceCents * line.quantity)}
               </p>
             </div>
