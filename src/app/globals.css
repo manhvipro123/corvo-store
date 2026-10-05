@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ * Monochrome, image-led luxury storefront: black on white, one muted grey,
+ * a near-white surface behind product imagery, hairline borders, no radius.
+ */
+:root {
+  --background: #ffffff;
+  --foreground: #000000;
+  --muted: #767676; /* secondary text; 4.5:1 on white */
+  --surface: #fbfbfb; /* product image backdrop */
+  --border: #d9d9d9; /* hairline dividers */
+  --overlay: rgb(0 0 0 / 0.4); /* scrim over imagery / modals */
+
+  /* Horizontal page gutter, widens with the viewport. */
+  --gutter: 1rem;
+  --header-height: 3.5rem;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --gutter: 1.5rem;
+    --header-height: 4rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --gutter: 4rem;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000;
+    --foreground: #ffffff;
+    --muted: #a3a3a3;
+    --surface: #0d0d0d;
+    --border: #333333;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-overlay: var(--overlay);
+
+  --font-sans: var(--font-jost), ui-sans-serif, system-ui, sans-serif;
+
+  --spacing-gutter: var(--gutter);
+  --spacing-header: var(--header-height);
+
+  --container-page: 120rem; /* 1920px */
+  --container-prose: 40rem;
+}
+
+/*
+ * Type roles. Small, tight UI text; uppercase + bold for headings and
+ * actions; slightly negative tracking on mixed-case text.
+ */
+@utility text-display {
+  font-size: clamp(1.75rem, 1.2rem + 2.2vw, 3rem);
+  line-height: 1.1;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+@utility text-title {
+  font-size: 1rem;
+  line-height: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+
+@utility text-heading {
+  font-size: 0.875rem;
+  line-height: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+@utility text-label {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@utility text-body {
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  letter-spacing: -0.02em;
+}
+
+@utility text-meta {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: -0.03em;
+}
+
+/* Horizontal scrollers (e.g. category tabs) without a visible scrollbar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-body text-foreground font-sans;
+  }
+
+  ::selection {
+    @apply bg-foreground text-background;
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--foreground);
+    outline-offset: 2px;
+  }
+
+  /* Lock page scroll behind modal dialogs (e.g. the filter sheet). */
+  html:has(dialog[open]) {
+    overflow: hidden;
+  }
+
+  img,
+  video {
+    @apply block max-w-full;
+  }
+}
