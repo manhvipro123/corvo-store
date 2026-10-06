@@ -14,6 +14,7 @@ import {
 import { cache } from "react";
 
 import { db } from "@/db";
+import { users } from "@/db/auth-schema";
 import {
   categories,
   orderItems,
@@ -21,10 +22,24 @@ import {
   productStock,
   products,
 } from "@/db/schema";
-import type { CatalogFilters } from "@/lib/catalog";
+import { type CatalogFilters, LOW_STOCK_THRESHOLD } from "@/lib/catalog";
 import { escapeLike, searchTerms } from "@/lib/search";
 import { HISTORY_STATUSES } from "@/lib/orders";
-import type { Category, Order, OrderListItem, Product } from "@/types/catalog";
+import type {
+  AdminCategory,
+  AdminOrder,
+  AdminOrderListItem,
+  AdminProduct,
+  InventoryRow,
+} from "@/types/admin";
+import type {
+  Category,
+  Order,
+  OrderLine,
+  OrderListItem,
+  OrderStatus,
+  Product,
+} from "@/types/catalog";
 
 /** Columns every product query selects; mapped to the UI `Product` type. */
 const productColumns = {
@@ -219,7 +234,11 @@ export async function getOrderForUser(
     )
     .limit(1);
   if (!order) return undefined;
+  return { ...order, lines: await orderLines(order.id) };
+}
 
+/** An order's lines: snapshot name, SKU and price, plus the product's image. */
+async function orderLines(orderId: string): Promise<OrderLine[]> {
   const lines = await db
     .select({
       productId: orderItems.productId,
@@ -234,36 +253,36 @@ export async function getOrderForUser(
     })
     .from(orderItems)
     .innerJoin(products, eq(products.id, orderItems.productId))
-    .where(eq(orderItems.orderId, order.id))
+    .where(eq(orderItems.orderId, orderId))
     .orderBy(asc(orderItems.productId));
 
-  return {
-    ...order,
-    lines: lines.map(({ imageUrl, imageAlt, imageFit, ...line }) => ({
-      ...line,
-      image: { src: imageUrl, alt: imageAlt, fit: imageFit },
-    })),
-  };
+  return lines.map(({ imageUrl, imageAlt, imageFit, ...line }) => ({
+    ...line,
+    image: { src: imageUrl, alt: imageAlt, fit: imageFit },
+  }));
 }
+
+/** Columns of an order-history row (`OrderListItem`). */
+const orderListColumns = {
+  id: orders.id,
+  status: orders.status,
+  createdAt: orders.createdAt,
+  itemCount: sql<number>`(
+    select coalesce(sum(${orderItems.quantity}), 0)
+    from ${orderItems} where ${orderItems.orderId} = ${orders.id}
+  )`.mapWith(Number),
+  totalCents:
+    sql<number>`coalesce(${orders.totalCents}, ${orders.subtotalCents})`.mapWith(
+      Number,
+    ),
+};
 
 /** The user's order history, newest first; never other users' orders. */
 export async function getOrdersForUser(
   userId: string,
 ): Promise<OrderListItem[]> {
   return db
-    .select({
-      id: orders.id,
-      status: orders.status,
-      createdAt: orders.createdAt,
-      itemCount: sql<number>`(
-        select coalesce(sum(${orderItems.quantity}), 0)
-        from ${orderItems} where ${orderItems.orderId} = ${orders.id}
-      )`.mapWith(Number),
-      totalCents:
-        sql<number>`coalesce(${orders.totalCents}, ${orders.subtotalCents})`.mapWith(
-          Number,
-        ),
-    })
+    .select(orderListColumns)
     .from(orders)
     .where(
       and(
@@ -272,4 +291,204 @@ export async function getOrdersForUser(
       ),
     )
     .orderBy(desc(orders.createdAt));
+}
+
+// Admin reads. Pages call these only after `requireAdmin`; they are not
+// scoped to a user and must never back a customer-facing page.
+
+function selectAdminProducts() {
+  return db
+    .select({
+      ...productColumns,
+      categoryId: products.categoryId,
+      position: products.position,
+    })
+    .from(products)
+    .innerJoin(categories, eq(products.categoryId, categories.id))
+    .leftJoin(productStock, eq(productStock.productId, products.id));
+}
+
+function toAdminProduct({
+  categoryId,
+  position,
+  ...row
+}: Awaited<ReturnType<typeof selectAdminProducts>>[number]): AdminProduct {
+  return { ...toProduct(row), categoryId, position };
+}
+
+/** Name, SKU or slug contains every term (case-insensitive). */
+function adminProductSearch(query: string | undefined) {
+  const text = sql`concat_ws(' ', ${products.name}, ${products.sku}, ${products.slug})`;
+  return searchTerms(query ?? "").map((term) =>
+    ilike(text, `%${escapeLike(term)}%`),
+  );
+}
+
+/** Every product in "Recommended" order, optionally narrowed. */
+export async function getAdminProducts({
+  category,
+  query,
+}: {
+  category?: string;
+  query?: string;
+}): Promise<AdminProduct[]> {
+  const rows = await selectAdminProducts()
+    .where(
+      and(
+        category ? eq(categories.slug, category) : undefined,
+        ...adminProductSearch(query),
+      ),
+    )
+    .orderBy(asc(products.position), asc(products.id));
+  return rows.map(toAdminProduct);
+}
+
+export async function getAdminProduct(
+  id: number,
+): Promise<AdminProduct | undefined> {
+  const [row] = await selectAdminProducts().where(eq(products.id, id)).limit(1);
+  return row && toAdminProduct(row);
+}
+
+function selectAdminCategories() {
+  return db
+    .select({
+      id: categories.id,
+      slug: categories.slug,
+      name: categories.name,
+      description: categories.description,
+      position: categories.position,
+      productCount: sql<number>`count(${products.id})`.mapWith(Number),
+    })
+    .from(categories)
+    .leftJoin(products, eq(products.categoryId, categories.id))
+    .groupBy(categories.id);
+}
+
+export async function getAdminCategories(): Promise<AdminCategory[]> {
+  return selectAdminCategories().orderBy(
+    asc(categories.position),
+    asc(categories.id),
+  );
+}
+
+export async function getAdminCategory(
+  id: number,
+): Promise<AdminCategory | undefined> {
+  const [row] = await selectAdminCategories().where(eq(categories.id, id));
+  return row;
+}
+
+const available = sql<number>`coalesce(${productStock.quantity}, 0)`;
+
+/**
+ * Stock per product. `available` is what can still be sold; units in
+ * pending checkouts were deducted at reservation and are shown as `onHold`.
+ */
+export async function getInventory({
+  status,
+}: {
+  status?: "low-stock" | "sold-out";
+}): Promise<InventoryRow[]> {
+  const rows = await db
+    .select({
+      id: products.id,
+      slug: products.slug,
+      name: products.name,
+      sku: products.sku,
+      categoryName: categories.name,
+      imageUrl: products.imageUrl,
+      imageAlt: products.imageAlt,
+      imageFit: products.imageFit,
+      available: available.mapWith(Number),
+      onHold: sql<number>`(
+        select coalesce(sum(${orderItems.quantity}), 0)
+        from ${orderItems}
+        inner join ${orders} on ${orders.id} = ${orderItems.orderId}
+        where ${orderItems.productId} = ${products.id}
+          and ${orders.status} = 'pending'
+      )`.mapWith(Number),
+    })
+    .from(products)
+    .innerJoin(categories, eq(products.categoryId, categories.id))
+    .leftJoin(productStock, eq(productStock.productId, products.id))
+    .where(
+      status === "sold-out"
+        ? sql`${available} <= 0`
+        : status === "low-stock"
+          ? sql`${available} between 1 and ${LOW_STOCK_THRESHOLD}`
+          : undefined,
+    )
+    .orderBy(asc(products.position), asc(products.id));
+
+  return rows.map(({ imageUrl, imageAlt, imageFit, ...row }) => ({
+    ...row,
+    image: { src: imageUrl, alt: imageAlt, fit: imageFit },
+  }));
+}
+
+export const ADMIN_ORDERS_PAGE_SIZE = 50;
+
+/** All customers' orders, newest first, one page at a time. */
+export async function getAdminOrders({
+  statuses,
+  page,
+}: {
+  /** Undefined: every status. */
+  statuses?: readonly OrderStatus[];
+  /** 1-based. */
+  page: number;
+}): Promise<{ orders: AdminOrderListItem[]; hasNextPage: boolean }> {
+  const rows = await db
+    .select({
+      ...orderListColumns,
+      customerName: users.name,
+      customerEmail: users.email,
+    })
+    .from(orders)
+    .innerJoin(users, eq(users.id, orders.userId))
+    .where(statuses ? inArray(orders.status, [...statuses]) : undefined)
+    .orderBy(desc(orders.createdAt), asc(orders.id))
+    // One extra row tells whether there is a next page.
+    .limit(ADMIN_ORDERS_PAGE_SIZE + 1)
+    .offset((page - 1) * ADMIN_ORDERS_PAGE_SIZE);
+  return {
+    orders: rows.slice(0, ADMIN_ORDERS_PAGE_SIZE),
+    hasNextPage: rows.length > ADMIN_ORDERS_PAGE_SIZE,
+  };
+}
+
+/** Any customer's order, in any status, with its lines. */
+export async function getAdminOrder(
+  orderId: string,
+): Promise<AdminOrder | undefined> {
+  const [row] = await db
+    .select({
+      id: orders.id,
+      status: orders.status,
+      subtotalCents: orders.subtotalCents,
+      totalCents: orders.totalCents,
+      email: orders.email,
+      shipping: orders.shipping,
+      createdAt: orders.createdAt,
+      stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+      stripePaymentIntentId: orders.stripePaymentIntentId,
+      paidAt: orders.paidAt,
+      expiresAt: orders.expiresAt,
+      customerId: users.id,
+      customerName: users.name,
+      customerEmail: users.email,
+    })
+    .from(orders)
+    .innerJoin(users, eq(users.id, orders.userId))
+    .where(eq(orders.id, orderId))
+    .limit(1);
+  if (!row) return undefined;
+
+  const { customerId, customerName, customerEmail, ...order } = row;
+  return {
+    ...order,
+    customer: { id: customerId, name: customerName, email: customerEmail },
+    lines: await orderLines(order.id),
+  };
 }

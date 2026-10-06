@@ -1,42 +1,45 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { SectionHeader } from "@/components/ui/section-header";
-import { getCategories, getProducts } from "@/db/queries";
-import { defaultFilters, getStockStatus } from "@/lib/catalog";
+import { getAdminCategories, getInventory } from "@/db/queries";
+import { getStockStatus } from "@/lib/catalog";
 import { requireAdmin } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Admin" };
 
-/** Read-only catalog counts. */
+/** Catalog counts, each linking to where it can be acted on. */
 export default async function AdminPage() {
   await requireAdmin("/admin");
-  const [products, categories] = await Promise.all([
-    getProducts(defaultFilters),
-    getCategories(),
+  const [inventory, categories] = await Promise.all([
+    getInventory({}),
+    getAdminCategories(),
   ]);
   const count = (status: ReturnType<typeof getStockStatus>) =>
-    products.filter((p) => getStockStatus(p.stock) === status).length;
+    inventory.filter((row) => getStockStatus(row.available) === status).length;
   const stats = [
-    ["Products", products.length],
-    ["Categories", categories.length],
-    ["Sold out", count("sold-out")],
-    ["Low stock", count("low-stock")],
+    ["Products", inventory.length, "/admin/products"],
+    ["Categories", categories.length, "/admin/categories"],
+    ["Sold out", count("sold-out"), "/admin/inventory?status=sold-out"],
+    ["Low stock", count("low-stock"), "/admin/inventory?status=low-stock"],
   ] as const;
 
   return (
     <section>
       <SectionHeader title="Overview" />
-      <dl className="border-border grid grid-cols-2 border-t md:grid-cols-4">
-        {stats.map(([label, value]) => (
-          <div
-            key={label}
-            className="border-border flex flex-col gap-2 border-b py-6"
-          >
-            <dt className="text-label text-muted">{label}</dt>
-            <dd className="text-display tabular-nums">{value}</dd>
-          </div>
+      <ul className="border-border grid grid-cols-2 border-t md:grid-cols-4">
+        {stats.map(([label, value, href]) => (
+          <li key={label} className="border-border border-b">
+            <Link
+              href={href}
+              className="flex flex-col gap-2 py-6 transition-opacity hover:opacity-70"
+            >
+              <span className="text-label text-muted">{label}</span>
+              <span className="text-display tabular-nums">{value}</span>
+            </Link>
+          </li>
         ))}
-      </dl>
+      </ul>
     </section>
   );
 }

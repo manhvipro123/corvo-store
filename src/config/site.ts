@@ -12,5 +12,11 @@ export const siteConfig = {
     { label: "Account details", href: "/account/details" },
   ],
   /** Sections of the admin area (`/admin`). */
-  adminNav: [{ label: "Overview", href: "/admin" }],
+  adminNav: [
+    { label: "Overview", href: "/admin" },
+    { label: "Products", href: "/admin/products" },
+    { label: "Categories", href: "/admin/categories" },
+    { label: "Inventory", href: "/admin/inventory" },
+    { label: "Orders", href: "/admin/orders" },
+  ],
 } as const;

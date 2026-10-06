@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Scope
 
-A deliberately minimal ecommerce storefront. The database covers categories, products, stock and Better Auth email/password accounts with an admin role. There is a cookie-based bag, Stripe Checkout, an account order history (no refunds) and the shell of an admin area (`/admin`). Do not add social login, password reset, email verification, 2FA, refunds, wishlists, reviews, warehouses, product variants, an admin dashboard/analytics, product deletion, image uploads or finer-grained admin roles unless explicitly asked.
+A deliberately minimal ecommerce storefront. The database covers categories, products, stock and Better Auth email/password accounts with an admin role. There is a cookie-based bag, Stripe Checkout, an account order history (no refunds) and a small admin area (`/admin`: products, categories, inventory, read-only orders). Do not add social login, password reset, email verification, 2FA, refunds, wishlists, reviews, warehouses, product variants, an admin dashboard/analytics, product deletion, image uploads or finer-grained admin roles unless explicitly asked.
 
 ## Verifying changes
 
@@ -73,8 +73,13 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 
 ## Admin
 
-- Three layers, and only the last two are security: `src/proxy.ts` (optimistic cookie redirect), `requireAdmin(path)` at the top of every page, and `requireAdmin(path)` as the first line of every admin Server Action, before reading the form or the DB. `admin/layout.tsx` only renders the nav; it is not a check. Server Actions are public POST endpoints callable from any page, so hiding admin links or the proxy protects nothing. `tests/admin-access.test.ts` covers `requireAdmin`, the layout and a guard in every admin `page.tsx`.
-- Admin sections are listed in `siteConfig.adminNav` and rendered with `SectionNav` (shared with the account area).
+- Three layers, and only the last two are security: `src/proxy.ts` (optimistic cookie redirect), `requireAdmin(path)` at the top of every page, and `requireAdmin(path)` as the first line of every Server Action in `src/app/admin/**/actions.ts`, before reading the form or the DB. `admin/layout.tsx` only renders the nav; it is not a check. Server Actions are public POST endpoints callable from any page, so hiding admin links or the proxy protects nothing. `tests/admin-actions.test.ts` discovers every export of `src/app/admin/**/actions.ts` and asserts it refuses non-admins before writing; `tests/admin-access.test.ts` covers `requireAdmin`, the layout and a guard in every admin `page.tsx`.
+- Reads are the "Admin" section of `src/db/queries.ts` (not user-scoped; never use them on customer pages). Writes live in `src/db/catalog-admin.ts`, which maps constraint failures to typed errors (`UniqueViolationError`, `CategoryInUseError`, `StockChangedError`, …) that actions turn into form errors.
+- Form rules live in `src/lib/admin-validation.ts`, shared by the client forms (checked on submit) and the actions. Prices are entered in dollars and parsed as text to cents; image URLs must be on the `images.unsplash.com` host allowed in `next.config.ts`.
+- Stock is set with `setStock`, which writes only if the quantity still equals what the admin saw (`expected`), so a checkout reserving units meanwhile isn't overwritten. Inventory shows `available` (already net of reservations) and `onHold` (units in pending orders).
+- Admins never change order status, prices or stock of an order: those stay webhook-only. The orders screens are read-only.
+- After a catalog write call `revalidateStorefront()` (`src/lib/storefront-cache.ts`) so the 60s ISR pages update at once.
+- In Drizzle single-table selects, columns render unqualified, so a correlated subquery like `products.category_id = categories.id` silently compares two `products` columns; use a join + `groupBy` instead. `ON DELETE RESTRICT` raises `23001`, not `23503`.
 
 ## Orders (account)
 

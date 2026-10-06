@@ -91,7 +91,7 @@ export function toggleColor(filters: CatalogFilters, color: ColorSlug) {
 }
 
 /** Below this many units the page shows "Only N left". */
-const LOW_STOCK_THRESHOLD = 3;
+export const LOW_STOCK_THRESHOLD = 3;
 
 export type StockStatus = "in-stock" | "low-stock" | "sold-out";
 

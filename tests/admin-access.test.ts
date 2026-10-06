@@ -89,7 +89,7 @@ describe("admin pages", () => {
   const pages = Object.keys(import.meta.glob("../src/app/admin/**/page.tsx"));
 
   it("are discovered", () => {
-    expect(pages.length).toBeGreaterThanOrEqual(1);
+    expect(pages.length).toBeGreaterThanOrEqual(9);
   });
 
   // The layout is not a check (it doesn't re-run on client navigation), so
