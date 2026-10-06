@@ -10,6 +10,9 @@
   --foreground: #000000;
   --muted: #767676; /* secondary text; 4.5:1 on white */
   --surface: #fbfbfb; /* product image backdrop */
+  /* Behind contained product shots. Stays light in dark mode so the
+     photos' white backdrops can be multiplied away (see ProductImage). */
+  --stage: #fbfbfb;
   --border: #d9d9d9; /* hairline dividers */
   --overlay: rgb(0 0 0 / 0.4); /* scrim over imagery / modals */
 
@@ -37,6 +40,7 @@
     --foreground: #ffffff;
     --muted: #a3a3a3;
     --surface: #0d0d0d;
+    --stage: #e6e6e6;
     --border: #333333;
   }
 }
@@ -46,6 +50,7 @@
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-surface: var(--surface);
+  --color-stage: var(--stage);
   --color-border: var(--border);
   --color-overlay: var(--overlay);
 

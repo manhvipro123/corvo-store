@@ -10,6 +10,7 @@ import { colors } from "@/lib/colors";
 import {
   type CatalogFilters,
   filtersHref,
+  sortLabel,
   sortOptions,
   toggleColor,
 } from "@/lib/catalog";
@@ -94,7 +95,7 @@ export function FilterSheet({
                         className="text-body flex items-center justify-between py-2"
                       >
                         <span className={cn(!active && "text-muted")}>
-                          {option.label}
+                          {sortLabel({ ...filters, sort: option.value })}
                         </span>
                         {active && (
                           <Check className="size-4" strokeWidth={1.5} />

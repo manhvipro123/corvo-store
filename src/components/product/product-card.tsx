@@ -11,8 +11,11 @@ export function ProductCard({
   product,
   sizes = "(min-width: 1024px) 25vw, 50vw",
   showCategory = true,
+  eager = false,
 }: {
   product: Product;
+  /** First row of a page: load now, it's likely the LCP. */
+  eager?: boolean;
   sizes?: string;
   /** Hide when the surrounding list is already scoped to one category. */
   showCategory?: boolean;
@@ -25,6 +28,7 @@ export function ProductCard({
         <ProductImage
           image={product.image}
           sizes={sizes}
+          loading={eager ? "eager" : undefined}
           className={cn(
             "transition-transform duration-700 ease-out group-hover:scale-[1.03]",
             soldOut && "opacity-60",

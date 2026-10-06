@@ -13,7 +13,13 @@ export type SortValue = (typeof sortOptions)[number]["value"];
 export type CatalogFilters = {
   category?: CategorySlug;
   colors: ColorSlug[];
+  /**
+   * The default sort. With a search `query` it means "by relevance", so it
+   * is labelled that way (see `sortLabel`).
+   */
   sort: SortValue;
+  /** Search text (already normalised). Set only on /search. */
+  query?: string;
 };
 
 export const defaultFilters: CatalogFilters = {
@@ -48,18 +54,29 @@ export function parseFilters(
   };
 }
 
-/** URL for the listing with `patch` applied; defaults are left out of the query. */
+/**
+ * URL for the listing with `patch` applied; defaults are left out of the
+ * query. With a search query the URL stays on /search and keeps `q`.
+ */
 export function filtersHref(
   filters: CatalogFilters,
   patch: Partial<CatalogFilters> = {},
 ) {
   const next = { ...filters, ...patch };
   const params = new URLSearchParams();
+  if (next.query) params.set("q", next.query);
   if (next.category) params.set("category", next.category);
   if (next.colors.length) params.set("color", next.colors.join(","));
   if (next.sort !== "recommended") params.set("sort", next.sort);
-  const query = params.toString();
-  return query ? `/products?${query}` : "/products";
+  const path = next.query ? "/search" : "/products";
+  const search = params.toString();
+  return search ? `${path}?${search}` : path;
+}
+
+/** Display label for a sort; the default reads "Relevance" when searching. */
+export function sortLabel(filters: CatalogFilters) {
+  if (filters.query && filters.sort === "recommended") return "Relevance";
+  return sortOptions.find((o) => o.value === filters.sort)?.label ?? "";
 }
 
 /** Listing URL for a single category with no other filters. */

@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { ShoppingBag } from "lucide-react";
+import { Search, ShoppingBag, User } from "lucide-react";
 
+import { BagCount } from "@/components/bag/bag-count";
 import { Container } from "@/components/ui/container";
 import { TextLink } from "@/components/ui/text-link";
 import { siteConfig } from "@/config/site";
@@ -18,7 +19,19 @@ export function SiteHeader() {
               {item.label}
             </TextLink>
           ))}
-          <ShoppingBag className="size-5" strokeWidth={1.5} aria-label="Cart" />
+          <Link href="/search" aria-label="Search" className="-m-1 p-1">
+            <Search className="size-5" strokeWidth={1.5} aria-hidden />
+          </Link>
+          {/* Static link: the header never reads the session, so cached pages stay static. */}
+          <Link href="/account" aria-label="Account" className="-m-1 p-1">
+            <User className="size-5" strokeWidth={1.5} aria-hidden />
+          </Link>
+          {/* The count is read on the client, so the header stays static. */}
+          <Link href="/bag" className="-m-1 flex items-center gap-1 p-1">
+            <ShoppingBag className="size-5" strokeWidth={1.5} aria-hidden />
+            <span className="sr-only">Bag</span>
+            <BagCount />
+          </Link>
         </nav>
       </Container>
     </header>

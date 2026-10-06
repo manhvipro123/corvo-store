@@ -7,6 +7,7 @@ import {
   filtersHref,
   getStockStatus,
   parseFilters,
+  sortLabel,
   toggleColor,
 } from "@/lib/catalog";
 import { colors } from "@/lib/colors";
@@ -65,6 +66,24 @@ describe("filtersHref", () => {
 
   it("builds a category-only link", () => {
     expect(categoryHref("shoes")).toBe("/products?category=shoes");
+  });
+});
+
+describe("search-aware filters", () => {
+  const searching = { ...defaultFilters, query: "black bag" };
+
+  it("keeps the query and stays on /search", () => {
+    expect(filtersHref(searching, { category: "bags" })).toBe(
+      "/search?q=black+bag&category=bags",
+    );
+  });
+
+  it("labels the default sort as relevance only when searching", () => {
+    expect(sortLabel(searching)).toBe("Relevance");
+    expect(sortLabel(defaultFilters)).toBe("Recommended");
+    expect(sortLabel({ ...searching, sort: "price-asc" })).toBe(
+      "Price: low to high",
+    );
   });
 });
 

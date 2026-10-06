@@ -51,6 +51,14 @@ export const editorialStory = {
   },
 };
 
+/** Intro line on /categories. */
+export const categoriesDescription =
+  "Every part of the collection, gathered by category.";
+
+/** Intro line on /new-arrivals. */
+export const newArrivalsDescription =
+  "The latest pieces to join the collection, from leather goods to jewelry.";
+
 /** Intro line on /products when no category is selected. */
 export const allProductsDescription =
   "The full collection: ready-to-wear, leather goods, shoes and jewelry.";

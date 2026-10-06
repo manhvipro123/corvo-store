@@ -90,6 +90,7 @@ export default async function ProductsPage({
                   <ProductCard
                     product={product}
                     showCategory={!filters.category}
+                    eager={index < 4}
                   />
                 </li>
               </Fragment>

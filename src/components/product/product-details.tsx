@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { AddToBag } from "@/components/bag/add-to-bag";
 import { StockStatus } from "@/components/product/stock-status";
 import { categoryHref, getStockStatus } from "@/lib/catalog";
 import { formatPrice } from "@/lib/format";
@@ -55,10 +55,7 @@ export function ProductDetails({ product }: { product: Product }) {
 
       <div className="mt-8 flex flex-col gap-3">
         <StockStatus stock={product.stock} />
-        {/* Cart isn't built yet; the button establishes the layout and states. */}
-        <Button fullWidth disabled={soldOut}>
-          {soldOut ? "Sold out" : "Add to bag"}
-        </Button>
+        <AddToBag productId={product.id} soldOut={soldOut} />
         {!soldOut && (
           <p className="text-meta text-muted">
             Complimentary express shipping and returns.

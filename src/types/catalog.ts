@@ -24,6 +24,8 @@ export type ColorSlug =
   "black" | "brown" | "neutral" | "grey" | "white" | "gold";
 
 export type Product = {
+  /** Database id; what the bag cookie stores. */
+  id: number;
   slug: string;
   name: string;
   category: CategorySlug;
@@ -47,4 +49,51 @@ export type Collection = {
   description: string;
   href: string;
   image: ImageAsset;
+};
+
+/** Mirrors the `order_status` enum in src/db/schema.ts. */
+export type OrderStatus =
+  "pending" | "processing" | "paid" | "failed" | "expired";
+
+export type OrderLine = {
+  productId: number;
+  slug: string;
+  name: string;
+  sku: string;
+  image: ImageAsset;
+  /** Whole cents, USD, as charged. */
+  unitPriceCents: number;
+  quantity: number;
+};
+
+export type Order = {
+  id: string;
+  status: OrderStatus;
+  subtotalCents: number;
+  /** What Stripe charged; null until paid. */
+  totalCents: number | null;
+  email: string | null;
+  shipping: {
+    name: string;
+    address: {
+      line1: string | null;
+      line2: string | null;
+      city: string | null;
+      state: string | null;
+      postal_code: string | null;
+      country: string | null;
+    };
+  } | null;
+  createdAt: Date;
+  lines: OrderLine[];
+};
+
+/** One row of the account's order history. */
+export type OrderListItem = {
+  id: string;
+  status: OrderStatus;
+  createdAt: Date;
+  itemCount: number;
+  /** What Stripe charged, or our subtotal while not yet charged. */
+  totalCents: number;
 };
