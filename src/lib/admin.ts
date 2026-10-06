@@ -56,7 +56,8 @@ export function parseInventoryFilter(
 /**
  * Order tabs. "Placed" (the default) is what customers see in their history;
  * pending and expired checkouts are listed separately since they were never
- * paid.
+ * paid. "Needs reconcile" are the pending ones Stripe reported complete
+ * whose webhook never came: their events must be resent from Stripe.
  */
 export const orderFilters: { value: AdminOrderFilter; label: string }[] = [
   { value: "placed", label: "Placed" },
@@ -64,6 +65,7 @@ export const orderFilters: { value: AdminOrderFilter; label: string }[] = [
   { value: "processing", label: "Processing" },
   { value: "failed", label: "Failed" },
   { value: "pending", label: "Awaiting payment" },
+  { value: "reconcile", label: "Needs reconcile" },
   { value: "expired", label: "Checkout ended" },
   { value: "all", label: "All" },
 ];
@@ -78,5 +80,6 @@ export function orderFilterStatuses(
 ): readonly OrderStatus[] | undefined {
   if (filter === "all") return undefined;
   if (filter === "placed") return HISTORY_STATUSES;
+  if (filter === "reconcile") return ["pending"];
   return [filter];
 }

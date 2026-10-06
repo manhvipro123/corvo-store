@@ -10,6 +10,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 import type { Order } from "@/types/catalog";
@@ -153,6 +154,11 @@ export const orders = pgTable(
     ),
     index("orders_user_id_idx").on(t.userId),
     index("orders_status_expires_at_idx").on(t.status, t.expiresAt),
+    // One open checkout per user, even when two requests start one at once:
+    // a second session for the same bag could be paid as well.
+    uniqueIndex("orders_one_pending_per_user_idx")
+      .on(t.userId)
+      .where(sql`${t.status} = 'pending'`),
   ],
 );
 
@@ -187,6 +193,24 @@ export const stripeEvents = pgTable("stripe_events", {
   type: text("type").notNull(),
   createdAt: timestamps.createdAt,
 });
+
+/**
+ * Fixed-window attempt counters for the auth Server Actions (see
+ * `src/lib/auth-rate-limit.ts`). Not related to any other table; rows whose
+ * window ended long ago are pruned by the cron route.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    /** "<action>:<ip|account>:<value>"; emails are SHA-256 hashed. */
+    key: text("key").primaryKey(),
+    count: integer("count").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("rate_limits_window_start_idx").on(t.windowStart)],
+);
 
 /** Why a product's stock changed (see `stock_movements`). */
 export const stockMovementReason = pgEnum("stock_movement_reason", [

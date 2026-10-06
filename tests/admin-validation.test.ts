@@ -199,9 +199,7 @@ describe("parseStockForm", () => {
           quantity: String(quantity),
         }),
       );
-    expect(parse(5, STOCK_MAX + 1).errors.quantity).toMatch(
-      String(STOCK_MAX),
-    );
+    expect(parse(5, STOCK_MAX + 1).errors.quantity).toMatch(String(STOCK_MAX));
     // Released checkout units took stock past the maximum: it can still be
     // saved unchanged or lowered, but not raised.
     const above = STOCK_MAX + 3;
@@ -261,6 +259,8 @@ describe("admin URL state", () => {
       "failed",
     ]);
     expect(orderFilterStatuses("pending")).toEqual(["pending"]);
+    expect(parseOrderFilter("reconcile")).toBe("reconcile");
+    expect(orderFilterStatuses("reconcile")).toEqual(["pending"]);
     expect(orderFilterStatuses("all")).toBeUndefined();
   });
 });

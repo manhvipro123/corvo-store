@@ -57,10 +57,10 @@ export default async function AdminPage() {
           completed at Stripe without a webhook and still{" "}
           {counts.needsReconcile === 1 ? "holds" : "hold"} stock.{" "}
           <Link
-            href="/admin/inventory"
+            href="/admin/orders?status=reconcile"
             className="underline underline-offset-2 hover:opacity-70"
           >
-            See Inventory
+            View {counts.needsReconcile === 1 ? "order" : "orders"}
           </Link>
         </p>
       )}

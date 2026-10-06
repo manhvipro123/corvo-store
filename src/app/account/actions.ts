@@ -5,6 +5,7 @@ import { refresh } from "next/cache";
 import { headers } from "next/headers";
 
 import { auth } from "@/lib/auth";
+import { TOO_MANY_ATTEMPTS, tooManyAttempts } from "@/lib/auth-rate-limit";
 import {
   type PasswordChangeErrors,
   validateField,
@@ -39,11 +40,6 @@ export async function updateProfile(
     // Only `name` is sent; `role` is input: false in the admin plugin.
     await auth.api.updateUser({ body: { name }, headers: await headers() });
   } catch (error) {
-    if (error instanceof APIError && error.statusCode === 429)
-      return {
-        formError: "Too many attempts. Please wait a minute and try again.",
-        values,
-      };
     console.error("[account] profile update failed", error);
     return {
       formError: "We couldn't save your changes. Please try again.",
@@ -67,7 +63,7 @@ export async function changePassword(
   _prev: PasswordFormState,
   data: FormData,
 ): Promise<PasswordFormState> {
-  await requireUser("/account/details");
+  const { user } = await requireUser("/account/details");
 
   const text = (key: string) => {
     const value = data.get(key);
@@ -80,8 +76,17 @@ export async function changePassword(
   const errors = validatePasswordChange(values);
   if (Object.keys(errors).length) return { fieldErrors: errors };
 
+  const requestHeaders = await headers();
+  // Limits guessing the current password with a stolen session.
+  if (
+    await tooManyAttempts("change-password", {
+      headers: requestHeaders,
+      account: user.id,
+    })
+  )
+    return { formError: TOO_MANY_ATTEMPTS };
+
   try {
-    const requestHeaders = await headers();
     // Not `revokeOtherSessions: true`: that also replaces this browser's
     // session, and the re-render in this same request would still send the
     // old cookie and bounce through sign-in. Revoke the others separately.
@@ -93,10 +98,6 @@ export async function changePassword(
   } catch (error) {
     if (error instanceof APIError) {
       const code = String(error.body?.code ?? "");
-      if (error.statusCode === 429)
-        return {
-          formError: "Too many attempts. Please wait a minute and try again.",
-        };
       if (code === "INVALID_PASSWORD")
         return {
           fieldErrors: {

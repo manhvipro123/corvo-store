@@ -3,7 +3,7 @@
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { OutOfStockError } from "@/db/orders";
+import { CheckoutInProgressError, OutOfStockError } from "@/db/orders";
 import {
   MAX_BAG_LINES,
   MAX_LINE_QUANTITY,
@@ -165,6 +165,13 @@ export async function startCheckout(): Promise<CheckoutState> {
           "Someone just bought one of these pieces. Please review your bag.",
       };
     }
+    // Another checkout of this account started at the same moment (e.g. in
+    // a second tab): only one of them may be paid.
+    if (error instanceof CheckoutInProgressError)
+      return {
+        message:
+          "Another checkout is already in progress. Please finish it or try again in a moment.",
+      };
     console.error("[checkout] could not start checkout", error);
     return { message: "We couldn't start checkout. Please try again." };
   }

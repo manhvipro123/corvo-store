@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { STOCK_MAX } from "@/lib/admin-validation";
 import { type ReservedLine, staleCutoff } from "@/lib/checkout";
 
+import { testUsers } from "./users";
+
 const url = process.env.TEST_DATABASE_URL;
 
 /**
@@ -20,7 +22,9 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
   let orders: typeof import("@/db/orders");
   const sql = neon(url ?? "postgresql://skipped@localhost/none");
   const run = crypto.randomUUID().slice(0, 8);
-  const userId = `inventory-test-${run}`;
+  const users = testUsers(sql, `inventory-test-${run}`);
+  /** The admin making stock changes; checkouts use their own shoppers. */
+  let userId: string;
   const productIds: number[] = [];
   let categoryId: number;
 
@@ -30,17 +34,21 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     orders = await import("@/db/orders");
     categoryId = (await sql`select id from categories order by id limit 1`)[0]
       .id as number;
-    await sql`insert into users (id, name, email, created_at, updated_at)
-              values (${userId}, 'Inventory Admin', ${`${userId}@example.test`}, now(), now())`;
+    userId = await users.shopper("Inventory Admin");
   });
 
   afterAll(async () => {
     if (!url) return;
-    await sql`delete from orders where user_id = ${userId}`;
+    // Orders first: their lines keep the products from being deleted.
+    await sql`delete from orders where user_id like ${`inventory-test-${run}-%`}`;
     if (productIds.length)
       await sql`delete from products where id = any(${productIds})`;
-    await sql`delete from users where id = ${userId}`;
+    await users.cleanup();
   });
+
+  /** Starts a checkout for a new shopper (one pending order per user). */
+  const reserve = async (lines: ReservedLine[]) =>
+    orders.reserveOrder({ userId: await users.shopper(), lines });
 
   /** A fresh product with `stock` units, created like the admin form does. */
   async function product(stock: number) {
@@ -175,10 +183,7 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
 
   it("records reservations and releases each held unit once", async () => {
     const id = await product(4);
-    const order = await orders.reserveOrder({
-      userId,
-      lines: [await line(id, 3)],
-    });
+    const order = await reserve([await line(id, 3)]);
     expect(await stockOf(id)).toBe(1);
 
     const expire = { to: "expired" as const, from: ["pending" as const] };
@@ -201,10 +206,7 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
 
   it("brings held units back after 'sold out' (agreed meaning: available = 0)", async () => {
     const id = await product(5);
-    const order = await orders.reserveOrder({
-      userId,
-      lines: [await line(id, 3)],
-    });
+    const order = await reserve([await line(id, 3)]);
     await admin.setStock({ productId: id, expected: 2, quantity: 0 }, userId);
     expect(await stockOf(id)).toBe(0);
 
@@ -215,11 +217,11 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
 
   it("never loses an update when an admin save races a checkout", async () => {
     const id = await product(5);
-    const [set, reserve] = await Promise.allSettled([
+    const [set, reserved] = await Promise.allSettled([
       admin.setStock({ productId: id, expected: 5, quantity: 10 }, userId),
-      orders.reserveOrder({ userId, lines: [await line(id, 2)] }),
+      reserve([await line(id, 2)]),
     ]);
-    expect(reserve.status).toBe("fulfilled");
+    expect(reserved.status).toBe("fulfilled");
     const quantity = await stockOf(id);
     if (set.status === "fulfilled") {
       // The admin's write went first, then the checkout took 2.
@@ -237,16 +239,10 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     const b = await product(40);
     for (let i = 0; i < 5; i++) {
       // Lines listed in opposite orders, so join order can't line them up.
-      const held = await orders.reserveOrder({
-        userId,
-        lines: [await line(b, 1), await line(a, 1)],
-      });
+      const held = await reserve([await line(b, 1), await line(a, 1)]);
       const [released, reserved] = await Promise.allSettled([
         orders.releaseOrder(held.id, { to: "expired", from: ["pending"] }),
-        orders.reserveOrder({
-          userId,
-          lines: [await line(a, 1), await line(b, 1)],
-        }),
+        reserve([await line(a, 1), await line(b, 1)]),
       ]);
       expect(released.status).toBe("fulfilled");
       expect(reserved.status).toBe("fulfilled");
@@ -276,7 +272,11 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     expect(await stockOf(missing)).toBe(0);
     expect(await history(missing)).toEqual([]);
     expect(await history(unrecorded)).toEqual([
-      expect.objectContaining({ delta: 7, quantity_after: 7, reason: "initial" }),
+      expect.objectContaining({
+        delta: 7,
+        quantity_after: 7,
+        reason: "initial",
+      }),
     ]);
     expect(await history(recorded)).toHaveLength(1);
     for (const id of [missing, unrecorded, recorded])
@@ -285,18 +285,9 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
 
   it("finds only pending checkouts past their reservation", async () => {
     const id = await product(6);
-    const stale = await orders.reserveOrder({
-      userId,
-      lines: [await line(id, 1)],
-    });
-    const open = await orders.reserveOrder({
-      userId,
-      lines: [await line(id, 2)],
-    });
-    const processing = await orders.reserveOrder({
-      userId,
-      lines: [await line(id, 1)],
-    });
+    const stale = await reserve([await line(id, 1)]);
+    const open = await reserve([await line(id, 2)]);
+    const processing = await reserve([await line(id, 1)]);
     await sql`update orders set expires_at = now() - interval '1 hour' where id = ${stale.id}`;
     await sql`update orders set status = 'processing' where id = ${processing.id}`;
 
@@ -318,9 +309,7 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
   it("takes never-tried stale checkouts before ones the sweep already tried", async () => {
     const id = await product(4);
     const [tried, older, newer] = await Promise.all(
-      [1, 1, 1].map(async (n) =>
-        orders.reserveOrder({ userId, lines: [await line(id, n)] }),
-      ),
+      [1, 1, 1].map(async (n) => reserve([await line(id, n)])),
     );
     // `tried` expired first but failed on the last run.
     await sql`update orders set expires_at = now() - interval '3 hours' where id = ${tried.id}`;
@@ -338,9 +327,7 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
   it("leaves checkouts in the grace period and flagged ones out of the sweep", async () => {
     const id = await product(6);
     const [recent, old, flagged] = await Promise.all(
-      [1, 1, 1].map(async (n) =>
-        orders.reserveOrder({ userId, lines: [await line(id, n)] }),
-      ),
+      [1, 1, 1].map(async (n) => reserve([await line(id, n)])),
     );
     await sql`update orders set expires_at = now() - interval '1 minute' where id = ${recent.id}`;
     await sql`update orders set expires_at = now() - interval '1 hour' where id in (${old.id}, ${flagged.id})`;

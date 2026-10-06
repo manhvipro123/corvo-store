@@ -174,16 +174,40 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
     expect(pending.orders.find((o) => o.id === mine.id)).toMatchObject({
       customerEmail: `${userId}@example.test`,
       itemCount: 3,
+      needsReconcile: false,
     });
+    const flaggedOnly = { statuses: ["pending"] as const, page: 1 };
+    const flagged = () =>
+      q.getAdminOrders({ ...flaggedOnly, reconcileOnly: true });
+    expect((await flagged()).orders.some((o) => o.id === mine.id)).toBe(false);
     const paid = await q.getAdminOrders({ statuses: ["paid"], page: 1 });
     expect(paid.orders.some((o) => o.id === mine.id)).toBe(false);
 
     const order = await q.getAdminOrder(mine.id as string);
     expect(order).toMatchObject({
       status: "pending",
+      needsReconcile: false,
       customer: { id: userId, name: "Admin Test" },
     });
     expect(order?.lines).toHaveLength(1);
+
+    // Flagged by the sweep: listed under "Needs reconcile" and marked.
+    await sql`update orders set reconcile_needed_at = now() where id = ${mine.id}`;
+    try {
+      expect(
+        (await flagged()).orders.find((o) => o.id === mine.id),
+      ).toMatchObject({ needsReconcile: true });
+      expect(await q.getAdminOrder(mine.id as string)).toMatchObject({
+        needsReconcile: true,
+      });
+      // Settled by a resent webhook: no longer needs anything.
+      await sql`update orders set status = 'paid' where id = ${mine.id}`;
+      expect(await q.getAdminOrder(mine.id as string)).toMatchObject({
+        needsReconcile: false,
+      });
+    } finally {
+      await sql`update orders set status = 'pending', reconcile_needed_at = null where id = ${mine.id}`;
+    }
   });
 
   it("manages categories and refuses to delete one with products", async () => {

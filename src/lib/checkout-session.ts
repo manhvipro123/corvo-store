@@ -153,14 +153,15 @@ function isMissingSession(error: unknown) {
  * has no such session (e.g. a test-mode session after switching to live
  * keys): neither can ever be paid here. A session completed in the meantime
  * is left alone: only the webhook marks orders paid. Returns what happened:
- * `released` here, `completed` at Stripe (waiting for its webhook), or
- * `skipped` (still open, or released elsewhere first). Other Stripe errors
- * throw, so the order is retried later.
+ * `released` here, `completed` at Stripe (waiting for its webhook), `open`
+ * (Stripe didn't expire it, so it can still be paid), or `skipped`
+ * (released elsewhere first). Other Stripe errors throw, so the order is
+ * retried later.
  */
 async function expireAndRelease(order: {
   id: string;
   stripeCheckoutSessionId: string | null;
-}): Promise<"released" | "completed" | "skipped"> {
+}): Promise<"released" | "completed" | "open" | "skipped"> {
   let released;
   if (!order.stripeCheckoutSessionId) {
     released = await releaseOrder(order.id, EXPIRE);
@@ -168,7 +169,8 @@ async function expireAndRelease(order: {
     try {
       await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
     } catch {
-      // Already expired or completed; the retrieve below tells which.
+      // Already expired or completed, or Stripe failed; the retrieve below
+      // tells which.
     }
     let session: Stripe.Checkout.Session | undefined;
     try {
@@ -184,9 +186,9 @@ async function expireAndRelease(order: {
       );
     }
     if (session?.status === "complete") return "completed";
+    if (session?.status === "open") return "open";
     // The `checkout.session.expired` webhook does the same; releasing is
     // idempotent, so whichever runs first wins.
-    if (session && session.status !== "expired") return "skipped";
     released = await releaseOrder(order.id, EXPIRE);
   }
   if (!released.rows.length) return "skipped";
@@ -203,17 +205,19 @@ async function expireAndRelease(order: {
  * confirmed; returns true then, and the caller must not start another
  * checkout for the same bag. Orders the sweep flagged are such sessions
  * already (Stripe reported them complete), so they count without asking
- * Stripe again.
+ * Stripe again. Throws if a session couldn't be expired: it could still be
+ * paid alongside a new one.
  */
 export async function cancelPendingCheckout(userId: string) {
   (await cookies()).delete(CHECKOUT_COOKIE);
   let awaitingConfirmation = false;
   for (const order of await getPendingOrdersForUser(userId)) {
-    if (
-      !order.reconcileNeeded &&
-      (await expireAndRelease(order)) !== "completed"
-    )
-      continue;
+    const outcome = order.reconcileNeeded
+      ? "completed"
+      : await expireAndRelease(order);
+    if (outcome === "open")
+      throw new Error(`Checkout session of order ${order.id} is still open`);
+    if (outcome !== "completed") continue;
     awaitingConfirmation = true;
     await rememberCheckout(order.id);
   }

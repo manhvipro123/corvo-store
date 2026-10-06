@@ -12,13 +12,27 @@ describe("safeCallbackURL", () => {
     "https://evil.com",
     "//evil.com",
     "/\\evil.com",
+    "\\/evil.com",
+    // Browsers drop tabs and newlines, so these mean "//evil.com".
+    "/\t/evil.com",
+    "/\n/evil.com",
+    "/\r\n/evil.com",
+    // Dot segments resolve to "//evil.com".
+    "/.//evil.com",
+    "/a/..//evil.com",
+    "/%2e//evil.com",
     "javascript:alert(1)",
     "",
     undefined,
     null,
     42,
-  ])("rejects %s", (value) => {
+  ])("rejects %j", (value) => {
     expect(safeCallbackURL(value)).toBe("/account");
+  });
+
+  it("returns the path as a browser resolves it", () => {
+    expect(safeCallbackURL("/acc\tount")).toBe("/account");
+    expect(safeCallbackURL("/a/../admin?x=1#top")).toBe("/admin?x=1#top");
   });
 });
 

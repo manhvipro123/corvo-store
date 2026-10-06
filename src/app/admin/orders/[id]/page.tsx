@@ -56,6 +56,13 @@ export default async function AdminOrderPage({
       <div className="border-border mb-8 flex flex-col gap-2 border px-4 py-4">
         <h3 className="text-label">Payment status</h3>
         <OrderStatus status={order.status} />
+        {order.needsReconcile && (
+          <p className="text-meta text-muted max-w-prose">
+            Stripe reports this checkout as completed, but its payment webhook
+            never arrived, so it still holds stock. Resend the events for the
+            Checkout Session below from the Stripe Dashboard to settle it.
+          </p>
+        )}
       </div>
 
       <dl className="border-border mb-10 border-t">

@@ -50,6 +50,13 @@
       "when": 1791307606923,
       "tag": "0006_orders_sweep_attempted",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791315110836,
+      "tag": "0007_one_pending_order_and_rate_limits",
+      "breakpoints": true
     }
   ]
 }

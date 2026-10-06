@@ -40,6 +40,7 @@ export default async function AdminOrdersPage({
   const page = parsePage(firstParam(params, "page"));
   const { orders, hasNextPage } = await getAdminOrders({
     statuses: orderFilterStatuses(filter),
+    reconcileOnly: filter === "reconcile",
     page,
   });
 
@@ -95,10 +96,12 @@ export default async function AdminOrdersPage({
                     {order.customerEmail}
                   </span>
                 </div>
-                <OrderStatus
-                  status={order.status}
-                  className="col-start-1 md:col-start-auto"
-                />
+                <div className="col-start-1 flex flex-col gap-1 md:col-start-auto">
+                  <OrderStatus status={order.status} />
+                  {order.needsReconcile && (
+                    <span className="text-meta">Needs reconcile</span>
+                  )}
+                </div>
                 <span className="text-body col-start-2 row-start-1 text-right font-medium tabular-nums md:col-start-auto md:row-start-auto">
                   {formatPrice(order.totalCents)}
                 </span>

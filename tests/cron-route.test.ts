@@ -6,6 +6,8 @@ const releaseStalePendingOrders = vi.fn(async () => ({
   skipped: 1,
 }));
 vi.mock("@/lib/checkout-session", () => ({ releaseStalePendingOrders }));
+const pruneRateLimits = vi.fn(async () => {});
+vi.mock("@/db/rate-limit", () => ({ pruneRateLimits }));
 
 const { GET } = await import("@/app/api/cron/release-expired/route");
 
@@ -31,6 +33,7 @@ describe("cron: release expired checkouts", () => {
     const response = await call(header);
     expect(response.status).toBe(401);
     expect(releaseStalePendingOrders).not.toHaveBeenCalled();
+    expect(pruneRateLimits).not.toHaveBeenCalled();
   });
 
   it("refuses everything, as a server error, when no secret is configured", async () => {
@@ -50,5 +53,6 @@ describe("cron: release expired checkouts", () => {
       skipped: 1,
     });
     expect(releaseStalePendingOrders).toHaveBeenCalledOnce();
+    expect(pruneRateLimits).toHaveBeenCalledOnce();
   });
 });

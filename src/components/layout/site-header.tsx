@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Search, ShoppingBag, User } from "lucide-react";
 
 import { BagCount } from "@/components/bag/bag-count";
+import { Logo } from "@/components/layout/logo";
 import { Container } from "@/components/ui/container";
 import { TextLink } from "@/components/ui/text-link";
 import { siteConfig } from "@/config/site";
@@ -10,8 +11,8 @@ export function SiteHeader() {
   return (
     <header className="bg-background/95 border-border sticky top-0 z-40 border-b backdrop-blur">
       <Container className="h-header flex items-center justify-between">
-        <Link href="/" className="text-heading">
-          {siteConfig.name}
+        <Link href="/" aria-label={`${siteConfig.name} home`}>
+          <Logo />
         </Link>
         <nav className="flex items-center gap-6">
           {siteConfig.nav.map((item) => (

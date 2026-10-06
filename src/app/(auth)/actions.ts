@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/lib/auth";
+import { TOO_MANY_ATTEMPTS, tooManyAttempts } from "@/lib/auth-rate-limit";
 import { safeCallbackURL } from "@/lib/auth-redirect";
 import {
   type AuthMode,
@@ -35,8 +36,6 @@ function readForm(mode: AuthMode, data: FormData) {
   return { values, errors: validateAuthForm(mode, values) };
 }
 
-const TOO_MANY_ATTEMPTS =
-  "Too many attempts. Please wait a minute and try again.";
 const UNEXPECTED = "Something went wrong on our side. Please try again.";
 
 export async function signIn(
@@ -47,15 +46,22 @@ export async function signIn(
   const echo = { email: values.email };
   if (Object.keys(errors).length) return { fieldErrors: errors, values: echo };
 
+  const requestHeaders = await headers();
+  if (
+    await tooManyAttempts("sign-in", {
+      headers: requestHeaders,
+      account: values.email,
+    })
+  )
+    return { formError: TOO_MANY_ATTEMPTS, values: echo };
+
   try {
     await auth.api.signInEmail({
       body: { email: values.email, password: values.password },
-      headers: await headers(),
+      headers: requestHeaders,
     });
   } catch (error) {
     if (error instanceof APIError) {
-      if (error.statusCode === 429)
-        return { formError: TOO_MANY_ATTEMPTS, values: echo };
       // Same message whether or not the email exists.
       return { formError: "Email or password is incorrect.", values: echo };
     }
@@ -75,6 +81,15 @@ export async function signUp(
   const echo = { name: values.name, email: values.email };
   if (Object.keys(errors).length) return { fieldErrors: errors, values: echo };
 
+  const requestHeaders = await headers();
+  if (
+    await tooManyAttempts("sign-up", {
+      headers: requestHeaders,
+      account: values.email,
+    })
+  )
+    return { formError: TOO_MANY_ATTEMPTS, values: echo };
+
   try {
     await auth.api.signUpEmail({
       body: {
@@ -82,13 +97,11 @@ export async function signUp(
         email: values.email,
         password: values.password,
       },
-      headers: await headers(),
+      headers: requestHeaders,
     });
   } catch (error) {
     if (error instanceof APIError) {
       const code = String(error.body?.code ?? "");
-      if (error.statusCode === 429)
-        return { formError: TOO_MANY_ATTEMPTS, values: echo };
       if (code.startsWith("USER_ALREADY_EXISTS"))
         return {
           fieldErrors: {

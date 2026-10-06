@@ -1,6 +1,16 @@
 import "server-only";
 
-import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -18,6 +28,9 @@ import {
   type Transition,
 } from "@/lib/checkout";
 
+/** How long a pending order may wait for its Checkout Session. */
+const ORPHAN_AFTER = "2 minutes";
+
 /** Thrown when a line can't be reserved because stock ran out. */
 export class OutOfStockError extends Error {
   constructor() {
@@ -25,18 +38,31 @@ export class OutOfStockError extends Error {
   }
 }
 
-/** Postgres check_violation, possibly wrapped by Drizzle. */
-function isCheckViolation(error: unknown): boolean {
-  for (let e = error; e && typeof e === "object"; e = (e as Error).cause) {
-    if ((e as { code?: string }).code === "23514") return true;
+/**
+ * Thrown when the user already has a pending order, e.g. a checkout started
+ * in another tab at the same moment (`orders_one_pending_per_user_idx`).
+ */
+export class CheckoutInProgressError extends Error {
+  constructor() {
+    super("The user already has a pending order.");
   }
-  return false;
+}
+
+/** The Postgres error behind a Drizzle/Neon error, if any. */
+function pgError(error: unknown) {
+  for (let e = error; e && typeof e === "object"; e = (e as Error).cause) {
+    const { code, constraint } = e as { code?: unknown; constraint?: unknown };
+    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code))
+      return { code, constraint: String(constraint ?? "") };
+  }
 }
 
 /**
  * Creates a pending order and reserves its stock in one transaction
  * (`db.batch`). Each decrement locks its stock row; if any would go below
  * zero, `product_stock_quantity_non_negative` fails and nothing is written.
+ * Throws `CheckoutInProgressError` if the user already has a pending order:
+ * end it first (`cancelPendingCheckout`).
  */
 export async function reserveOrder({
   userId,
@@ -93,7 +119,13 @@ export async function reserveOrder({
       throw new OutOfStockError();
     }
   } catch (error) {
-    if (isCheckViolation(error)) throw new OutOfStockError();
+    const pg = pgError(error);
+    if (pg?.code === "23514") throw new OutOfStockError();
+    if (
+      pg?.code === "23505" &&
+      pg.constraint === "orders_one_pending_per_user_idx"
+    )
+      throw new CheckoutInProgressError();
     throw error;
   }
 
@@ -202,9 +234,11 @@ export async function markSweepAttempted(orderIds: string[]) {
  * The user's pending orders that have a Stripe session, including ones
  * flagged by `markReconcileNeeded` (paid at Stripe, webhook missing), so
  * checkout can refuse to charge the same bag again. Orders still waiting for
- * their session are left out: another request is creating it right now
- * (`createCheckout` releases them if that fails, the sweep if it never
- * finishes). Uses `orders_user_id_idx`.
+ * their session are left out while another request may be creating it;
+ * after `ORPHAN_AFTER` they are included so a request that died midway
+ * can't block the user's next checkout until the sweep. Ending one is safe
+ * even if its request is still running: `attachCheckoutSession` then
+ * refuses it. Uses `orders_user_id_idx`.
  */
 export async function getPendingOrdersForUser(userId: string) {
   return db
@@ -218,7 +252,10 @@ export async function getPendingOrdersForUser(userId: string) {
       and(
         eq(orders.userId, userId),
         eq(orders.status, "pending"),
-        isNotNull(orders.stripeCheckoutSessionId),
+        or(
+          isNotNull(orders.stripeCheckoutSessionId),
+          lt(orders.createdAt, sql`now() - ${ORPHAN_AFTER}::interval`),
+        ),
       ),
     );
 }

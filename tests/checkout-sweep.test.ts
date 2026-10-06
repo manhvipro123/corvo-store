@@ -241,6 +241,18 @@ describe("cancelPendingCheckout", () => {
     );
   });
 
+  it("stops when Stripe couldn't expire an earlier session that is still open", async () => {
+    getPendingOrdersForUser.mockResolvedValue([
+      { id: "o1", stripeCheckoutSessionId: "cs_open", reconcileNeeded: false },
+    ]);
+    expire.mockRejectedValueOnce(new Error("Stripe rate limit"));
+    retrieve.mockResolvedValue({ status: "open" });
+
+    // It could still be paid: a second session for the same bag must not start.
+    await expect(cancelPendingCheckout("user-1")).rejects.toThrow("still open");
+    expect(releaseOrder).not.toHaveBeenCalled();
+  });
+
   it("refuses a new checkout while a reconcile-flagged order waits for its webhook", async () => {
     getPendingOrdersForUser.mockResolvedValue([
       { id: "o1", stripeCheckoutSessionId: "cs_paid", reconcileNeeded: true },

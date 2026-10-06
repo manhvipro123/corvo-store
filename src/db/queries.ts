@@ -7,6 +7,7 @@ import {
   eq,
   ilike,
   inArray,
+  isNotNull,
   ne,
   sql,
   type SQL,
@@ -577,13 +578,19 @@ export async function getStockMovements(
 
 export const ADMIN_ORDERS_PAGE_SIZE = 50;
 
+/** Flagged and still pending: a resent webhook settles it and the flag stays. */
+const needsReconcile = sql<boolean>`(${orders.status} = 'pending' and ${orders.reconcileNeededAt} is not null)`;
+
 /** All customers' orders, newest first, one page at a time. */
 export async function getAdminOrders({
   statuses,
+  reconcileOnly = false,
   page,
 }: {
   /** Undefined: every status. */
   statuses?: readonly OrderStatus[];
+  /** Only orders the sweep flagged (`reconcile_needed_at`). */
+  reconcileOnly?: boolean;
   /** 1-based. */
   page: number;
 }): Promise<{ orders: AdminOrderListItem[]; hasNextPage: boolean }> {
@@ -592,10 +599,16 @@ export async function getAdminOrders({
       ...orderListColumns,
       customerName: users.name,
       customerEmail: users.email,
+      needsReconcile,
     })
     .from(orders)
     .innerJoin(users, eq(users.id, orders.userId))
-    .where(statuses ? inArray(orders.status, [...statuses]) : undefined)
+    .where(
+      and(
+        statuses ? inArray(orders.status, [...statuses]) : undefined,
+        reconcileOnly ? isNotNull(orders.reconcileNeededAt) : undefined,
+      ),
+    )
     .orderBy(desc(orders.createdAt), asc(orders.id))
     // One extra row tells whether there is a next page.
     .limit(ADMIN_ORDERS_PAGE_SIZE + 1)
@@ -623,6 +636,7 @@ export async function getAdminOrder(
       stripePaymentIntentId: orders.stripePaymentIntentId,
       paidAt: orders.paidAt,
       expiresAt: orders.expiresAt,
+      needsReconcile,
       customerId: users.id,
       customerName: users.name,
       customerEmail: users.email,

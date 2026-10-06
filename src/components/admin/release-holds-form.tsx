@@ -8,6 +8,7 @@ import {
   releaseExpiredHolds,
 } from "@/app/admin/inventory/actions";
 import { Button } from "@/components/ui/button";
+import { TextLink } from "@/components/ui/text-link";
 
 /**
  * Banner with "Release expired holds" (runs the cron's sweep now). Always
@@ -60,7 +61,10 @@ export function ReleaseHoldsForm({
         Stripe, but the payment webhook never arrived, so{" "}
         {needsReconcile === 1 ? "it is" : "they are"} still holding stock.
         Resend the checkout events from the Stripe Dashboard to settle{" "}
-        {needsReconcile === 1 ? "it" : "them"}.
+        {needsReconcile === 1 ? "it" : "them"}.{" "}
+        <TextLink variant="inline" href="/admin/orders?status=reconcile">
+          View {needsReconcile === 1 ? "order" : "orders"}
+        </TextLink>
       </p>
     </div>
   );

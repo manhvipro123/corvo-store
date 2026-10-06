@@ -59,6 +59,8 @@ export type StockMovement = {
 export type AdminOrderListItem = OrderListItem & {
   customerName: string;
   customerEmail: string;
+  /** Pending, but Stripe reported the session complete (see `reconcile_needed_at`). */
+  needsReconcile: boolean;
 };
 
 export type AdminOrder = Order & {
@@ -67,6 +69,7 @@ export type AdminOrder = Order & {
   stripePaymentIntentId: string | null;
   paidAt: Date | null;
   expiresAt: Date;
+  needsReconcile: boolean;
 };
 
-export type AdminOrderFilter = OrderStatus | "placed" | "all";
+export type AdminOrderFilter = OrderStatus | "placed" | "reconcile" | "all";

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ReservedLine, Transition } from "@/lib/checkout";
 
 import { deleteTestStock, setTestStock } from "./stock";
+import { testUsers } from "./users";
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -11,7 +12,12 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   // Loaded in a hook: src/db/index.ts throws without a database URL.
   let orders: typeof import("@/db/orders");
   const sql = neon(url ?? "postgresql://skipped@localhost/none");
-  const userId = `orders-test-${crypto.randomUUID().slice(0, 8)}`;
+  const users = testUsers(
+    sql,
+    `orders-test-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  // Never left holding a pending order, so any test can start one for it.
+  let userId: string;
   const paid = {
     totalCents: null,
     email: null,
@@ -21,14 +27,12 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
 
   beforeAll(async () => {
     orders = await import("@/db/orders");
-    await sql`insert into users (id, name, email, created_at, updated_at)
-              values (${userId}, 'Orders Test', ${`${userId}@example.test`}, now(), now())`;
+    userId = await users.shopper("Orders Test");
   });
 
   afterAll(async () => {
     if (!url) return;
-    await sql`delete from orders where user_id = ${userId}`;
-    await sql`delete from users where id = ${userId}`;
+    await users.cleanup();
   });
 
   async function product(slug: string, stock: number | null) {
@@ -56,7 +60,10 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
     const bag = await product("top-handle-bag-cognac", 5);
     const lines: ReservedLine[] = [{ ...bag, quantity: 2 }];
     const before = Date.now();
-    const order = await orders.reserveOrder({ userId, lines });
+    const order = await orders.reserveOrder({
+      userId: await users.shopper(),
+      lines,
+    });
 
     // Still at least Stripe's 30-minute minimum when the session is created.
     expect(order.expiresAt.getTime()).toBeGreaterThanOrEqual(
@@ -77,15 +84,40 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   it("lets only one of two simultaneous checkouts take the last piece", async () => {
     const boot = await product("brogue-boot-chestnut", 1);
     const line = { ...boot, quantity: 1 };
+    const [first, second] = [await users.shopper(), await users.shopper()];
     const results = await Promise.allSettled([
-      orders.reserveOrder({ userId, lines: [line] }),
-      orders.reserveOrder({ userId, lines: [line] }),
+      orders.reserveOrder({ userId: first, lines: [line] }),
+      orders.reserveOrder({ userId: second, lines: [line] }),
     ]);
 
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((r) => r.status === "rejected");
     expect(rejected?.reason).toBeInstanceOf(orders.OutOfStockError);
     expect(await stockOf(boot.productId)).toBe(0);
+  });
+
+  it("lets a user hold only one pending order, even when two start at once", async () => {
+    const pump = await product("slingback-pump-noir", 4);
+    const line = { ...pump, quantity: 1 };
+    const shopper = await users.shopper();
+    const results = await Promise.allSettled([
+      orders.reserveOrder({ userId: shopper, lines: [line] }),
+      orders.reserveOrder({ userId: shopper, lines: [line] }),
+    ]);
+
+    const [held] = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(orders.CheckoutInProgressError);
+    // The refused one reserved nothing.
+    expect(await stockOf(pump.productId)).toBe(3);
+
+    // Once the first one ends, the next checkout can start.
+    await orders.releaseOrder(held.id, { to: "expired", from: ["pending"] });
+    const next = await orders.reserveOrder({ userId: shopper, lines: [line] });
+    expect(await statusOf(next.id)).toBe("pending");
   });
 
   it("reserves all lines or none", async () => {
@@ -185,8 +217,11 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   it("settles an async payment whose result arrives before `completed`", async () => {
     const pump = await product("slingback-pump-noir", 4);
     const [succeeded, failed] = await Promise.all(
-      [1, 2].map(() =>
-        orders.reserveOrder({ userId, lines: [{ ...pump, quantity: 1 }] }),
+      [1, 2].map(async () =>
+        orders.reserveOrder({
+          userId: await users.shopper(),
+          lines: [{ ...pump, quantity: 1 }],
+        }),
       ),
     );
     expect(await stockOf(pump.productId)).toBe(2);
@@ -227,46 +262,50 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   });
 
   it("lists only the user's own pending orders with a session, marking reconcile-flagged ones", async () => {
-    const other = `orders-test-${crypto.randomUUID().slice(0, 8)}`;
-    await sql`insert into users (id, name, email, created_at, updated_at)
-              values (${other}, 'Other', ${`${other}@example.test`}, now(), now())`;
-    try {
-      const pump = await product("slingback-pump-noir", 4);
-      const line = { ...pump, quantity: 1 };
-      const mine = await orders.reserveOrder({ userId: other, lines: [line] });
-      expect(
-        await orders.attachCheckoutSession(mine.id, `cs_test_${mine.id}`),
-      ).toBe(true);
-      // Still being created by another request: never cancelled from here.
-      await orders.reserveOrder({ userId: other, lines: [line] });
-      const flagged = await orders.reserveOrder({
-        userId: other,
+    const pump = await product("slingback-pump-noir", 4);
+    const line = { ...pump, quantity: 1 };
+    const pendingWithSession = async (shopper: string) => {
+      const order = await orders.reserveOrder({
+        userId: shopper,
         lines: [line],
       });
-      await orders.attachCheckoutSession(flagged.id, `cs_test_${flagged.id}`);
-      await orders.markReconcileNeeded(flagged.id);
-      await orders.reserveOrder({ userId, lines: [line] });
+      expect(
+        await orders.attachCheckoutSession(order.id, `cs_test_${order.id}`),
+      ).toBe(true);
+      return order;
+    };
 
-      const pending = await orders.getPendingOrdersForUser(other);
-      expect(pending).toHaveLength(2);
-      expect(pending).toEqual(
-        expect.arrayContaining([
-          {
-            id: mine.id,
-            stripeCheckoutSessionId: `cs_test_${mine.id}`,
-            reconcileNeeded: false,
-          },
-          {
-            id: flagged.id,
-            stripeCheckoutSessionId: `cs_test_${flagged.id}`,
-            reconcileNeeded: true,
-          },
-        ]),
-      );
-    } finally {
-      await sql`delete from orders where user_id = ${other}`;
-      await sql`delete from users where id = ${other}`;
-    }
+    const open = await users.shopper();
+    const mine = await pendingWithSession(open);
+    // Another user's checkout is never listed.
+    await pendingWithSession(await users.shopper());
+    // Still being created by another request: never cancelled from here.
+    const creating = await users.shopper();
+    await orders.reserveOrder({ userId: creating, lines: [line] });
+    const paidAtStripe = await users.shopper();
+    const flagged = await pendingWithSession(paidAtStripe);
+    await orders.markReconcileNeeded(flagged.id);
+
+    expect(await orders.getPendingOrdersForUser(open)).toEqual([
+      {
+        id: mine.id,
+        stripeCheckoutSessionId: `cs_test_${mine.id}`,
+        reconcileNeeded: false,
+      },
+    ]);
+    expect(await orders.getPendingOrdersForUser(creating)).toEqual([]);
+    // Unless its request died: then the next checkout ends it.
+    await sql`update orders set created_at = now() - interval '3 minutes' where user_id = ${creating}`;
+    expect(await orders.getPendingOrdersForUser(creating)).toEqual([
+      expect.objectContaining({ stripeCheckoutSessionId: null }),
+    ]);
+    expect(await orders.getPendingOrdersForUser(paidAtStripe)).toEqual([
+      {
+        id: flagged.id,
+        stripeCheckoutSessionId: `cs_test_${flagged.id}`,
+        reconcileNeeded: true,
+      },
+    ]);
   });
 
   it("won't attach a session to an order that ended meanwhile", async () => {
@@ -288,61 +327,56 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   it("lists only the user's own placed orders, newest first", async () => {
     const queries = await import("@/db/queries");
     const pump = await product("slingback-pump-noir", 10);
-    const other = `${userId}-other`;
-    await sql`insert into users (id, name, email, created_at, updated_at)
-              values (${other}, 'Other', ${`${other}@example.test`}, now(), now())`;
-    try {
-      const reserve = (uid: string, quantity: number) =>
-        orders.reserveOrder({ userId: uid, lines: [{ ...pump, quantity }] });
-      const older = await reserve(userId, 2);
-      const newer = await reserve(userId, 1);
-      const abandoned = await reserve(userId, 1);
-      const theirs = await reserve(other, 1);
-      await sql`update orders set created_at = now() - interval '1 day' where id = ${older.id}`;
-      await sql`update orders set status = 'paid', total_cents = 123 where id = ${older.id}`;
-      await sql`update orders set status = 'failed' where id = ${newer.id}`;
-      await sql`update orders set status = 'paid' where id = ${theirs.id}`;
-      await orders.releaseOrder(abandoned.id, {
-        to: "expired",
-        from: ["pending"],
-      });
+    const other = await users.shopper("Other");
+    const reserve = (uid: string, quantity: number) =>
+      orders.reserveOrder({ userId: uid, lines: [{ ...pump, quantity }] });
+    // One at a time: each ends before the user's next checkout starts.
+    const older = await reserve(userId, 2);
+    await sql`update orders set created_at = now() - interval '1 day' where id = ${older.id}`;
+    await sql`update orders set status = 'paid', total_cents = 123 where id = ${older.id}`;
+    const newer = await reserve(userId, 1);
+    await sql`update orders set status = 'failed' where id = ${newer.id}`;
+    const abandoned = await reserve(userId, 1);
+    await orders.releaseOrder(abandoned.id, {
+      to: "expired",
+      from: ["pending"],
+    });
+    const theirs = await reserve(other, 1);
+    await sql`update orders set status = 'paid' where id = ${theirs.id}`;
 
-      const list = await queries.getOrdersForUser(userId);
-      const ids = list.map((o) => o.id);
-      expect(ids).not.toContain(theirs.id);
-      expect(ids).not.toContain(abandoned.id);
-      expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
-      expect(list.find((o) => o.id === older.id)).toMatchObject({
-        status: "paid",
-        itemCount: 2,
-        totalCents: 123,
-      });
-      expect(list.find((o) => o.id === newer.id)).toMatchObject({
-        status: "failed",
-        totalCents: pump.unitPriceCents,
-      });
+    const list = await queries.getOrdersForUser(userId);
+    const ids = list.map((o) => o.id);
+    expect(ids).not.toContain(theirs.id);
+    expect(ids).not.toContain(abandoned.id);
+    expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
+    expect(list.find((o) => o.id === older.id)).toMatchObject({
+      status: "paid",
+      itemCount: 2,
+      totalCents: 123,
+    });
+    expect(list.find((o) => o.id === newer.id)).toMatchObject({
+      status: "failed",
+      totalCents: pump.unitPriceCents,
+    });
 
-      expect(
-        await queries.getOrderForUser({ orderId: theirs.id }, userId),
-      ).toBeUndefined();
-    } finally {
-      await sql`delete from orders where user_id = ${other}`;
-      await sql`delete from users where id = ${other}`;
-    }
+    expect(
+      await queries.getOrderForUser({ orderId: theirs.id }, userId),
+    ).toBeUndefined();
   });
 
   it("shows the order as charged, only to its owner, after a price change", async () => {
     const queries = await import("@/db/queries");
     const pump = await product("slingback-pump-noir", 10);
+    const owner = await users.shopper();
     const order = await orders.reserveOrder({
-      userId,
+      userId: owner,
       lines: [{ ...pump, quantity: 2 }],
     });
     await sql`update products set price_cents = price_cents + 50000 where id = ${pump.productId}`;
     try {
       const detail = await queries.getOrderForUser(
         { orderId: order.id },
-        userId,
+        owner,
       );
       expect(detail?.lines).toEqual([
         expect.objectContaining({
