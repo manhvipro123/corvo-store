@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { neon } from "@neondatabase/serverless";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -230,6 +232,57 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     await expectLedgerMatches(id);
   });
 
+  it("releases and reserves the same products at once without deadlocking", async () => {
+    const a = await product(40);
+    const b = await product(40);
+    for (let i = 0; i < 5; i++) {
+      // Lines listed in opposite orders, so join order can't line them up.
+      const held = await orders.reserveOrder({
+        userId,
+        lines: [await line(b, 1), await line(a, 1)],
+      });
+      const [released, reserved] = await Promise.allSettled([
+        orders.releaseOrder(held.id, { to: "expired", from: ["pending"] }),
+        orders.reserveOrder({
+          userId,
+          lines: [await line(a, 1), await line(b, 1)],
+        }),
+      ]);
+      expect(released.status).toBe("fulfilled");
+      expect(reserved.status).toBe("fulfilled");
+    }
+    expect(await stockOf(a)).toBe(35);
+    expect(await stockOf(b)).toBe(35);
+    await expectLedgerMatches(a);
+    await expectLedgerMatches(b);
+  });
+
+  it("backfills stock rows and opening balances (migration 0004) on existing data", async () => {
+    // The states 0004 met in production: a product without a stock row,
+    // one with stock but no history yet, and one already with history.
+    const missing = await product(0);
+    await sql`delete from product_stock where product_id = ${missing}`;
+    const unrecorded = await product(7);
+    await sql`delete from stock_movements where product_id = ${unrecorded}`;
+    const recorded = await product(3);
+
+    const migration = readFileSync(
+      new URL("../../drizzle/0004_backfill_stock.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint"))
+      await sql.query(statement);
+
+    expect(await stockOf(missing)).toBe(0);
+    expect(await history(missing)).toEqual([]);
+    expect(await history(unrecorded)).toEqual([
+      expect.objectContaining({ delta: 7, quantity_after: 7, reason: "initial" }),
+    ]);
+    expect(await history(recorded)).toHaveLength(1);
+    for (const id of [missing, unrecorded, recorded])
+      await expectLedgerMatches(id);
+  });
+
   it("finds only pending checkouts past their reservation", async () => {
     const id = await product(6);
     const stale = await orders.reserveOrder({
@@ -262,6 +315,26 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     await expectLedgerMatches(id);
   });
 
+  it("takes never-tried stale checkouts before ones the sweep already tried", async () => {
+    const id = await product(4);
+    const [tried, older, newer] = await Promise.all(
+      [1, 1, 1].map(async (n) =>
+        orders.reserveOrder({ userId, lines: [await line(id, n)] }),
+      ),
+    );
+    // `tried` expired first but failed on the last run.
+    await sql`update orders set expires_at = now() - interval '3 hours' where id = ${tried.id}`;
+    await sql`update orders set expires_at = now() - interval '2 hours' where id = ${older.id}`;
+    await sql`update orders set expires_at = now() - interval '1 hour' where id = ${newer.id}`;
+    await orders.markSweepAttempted([tried.id]);
+
+    const ids = (await orders.getStalePendingOrders(staleCutoff(), 500))
+      .map((o) => o.id)
+      .filter((o) => [tried.id, older.id, newer.id].includes(o));
+    expect(ids).toEqual([older.id, newer.id, tried.id]);
+    await expectLedgerMatches(id);
+  });
+
   it("leaves checkouts in the grace period and flagged ones out of the sweep", async () => {
     const id = await product(6);
     const [recent, old, flagged] = await Promise.all(
@@ -281,9 +354,14 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
     expect(ids).not.toContain(flagged.id);
 
     // Flagging changes no stock, and only pending orders can be flagged.
+    // Per product, the holds split the way the sweep and the banner do: the
+    // grace-period order is still on hold, only the old one is stale, and the
+    // flagged (paid) one is counted apart since it won't come back.
     expect(await q.getInventoryItem(id)).toMatchObject({
       available: 3,
-      staleHolds: 3,
+      onHold: 1,
+      staleHolds: 1,
+      needsReconcile: 1,
     });
     await orders.releaseOrder(old.id, { to: "expired", from: ["pending"] });
     await orders.markReconcileNeeded(old.id);

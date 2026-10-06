@@ -137,6 +137,12 @@ export const orders = pgTable(
      * the sweep skips it from then on. Settled by resending the event.
      */
     reconcileNeededAt: timestamp("reconcile_needed_at", { withTimezone: true }),
+    /**
+     * Last time the stale-checkout sweep picked the order up. The sweep takes
+     * never-tried orders first, then the least recently tried, so orders it
+     * keeps failing on (e.g. Stripe errors) can't hold up the rest.
+     */
+    sweepAttemptedAt: timestamp("sweep_attempted_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [

@@ -11,6 +11,7 @@ import {
   getPendingOrdersForUser,
   getStalePendingOrders,
   markReconcileNeeded,
+  markSweepAttempted,
   releaseOrder,
   reserveOrder,
 } from "@/db/orders";
@@ -24,6 +25,11 @@ import {
 } from "@/lib/checkout";
 import { revalidateStorefront } from "@/lib/storefront-cache";
 import { siteURL, stripe } from "@/lib/stripe";
+
+const EXPIRE = { to: "expired", from: ["pending"] } satisfies Pick<
+  Transition,
+  "to" | "from"
+>;
 
 /** httpOnly cookie with the browser's pending order id (one at a time). */
 const CHECKOUT_COOKIE = "corvo_checkout";
@@ -63,7 +69,8 @@ export async function createCheckout(
       { idempotencyKey: order.id },
     );
   } catch (error) {
-    await releaseOrder(order.id, { to: "expired", from: ["pending"] });
+    const released = await releaseOrder(order.id, EXPIRE);
+    if (released.rows.length) revalidateStorefront();
     throw error;
   }
 
@@ -91,7 +98,8 @@ async function rememberCheckout(orderId: string) {
 /**
  * Applies a verified webhook event's Checkout Session to its order. The only
  * code path that confirms a payment; nothing from the browser or its
- * redirects reaches it. Returns the order's status afterwards.
+ * redirects reaches it. Refreshes the storefront only if units came back.
+ * Returns the order's status afterwards.
  */
 export async function syncCheckoutSession(
   session: Stripe.Checkout.Session,
@@ -113,7 +121,7 @@ export async function syncCheckoutSession(
   }
 
   const shipping = session.collected_information?.shipping_details;
-  await applyTransition(
+  const { released } = await applyTransition(
     order.id,
     transition,
     {
@@ -129,13 +137,10 @@ export async function syncCheckoutSession(
     },
     event,
   );
+  // Units came back: cached product pages show them on the next visit.
+  if (released) revalidateStorefront();
   return (await getOrderRecord(order.id))?.status;
 }
-
-const EXPIRE = { to: "expired", from: ["pending"] } satisfies Pick<
-  Transition,
-  "to" | "from"
->;
 
 /** Stripe's "No such checkout.session": unknown to the account we use. */
 function isMissingSession(error: unknown) {
@@ -196,13 +201,19 @@ async function expireAndRelease(order: {
  * session expired. A session paid in the meantime is left for the webhook
  * and remembered in this browser, so its pieces leave the bag once it's
  * confirmed; returns true then, and the caller must not start another
- * checkout for the same bag.
+ * checkout for the same bag. Orders the sweep flagged are such sessions
+ * already (Stripe reported them complete), so they count without asking
+ * Stripe again.
  */
 export async function cancelPendingCheckout(userId: string) {
   (await cookies()).delete(CHECKOUT_COOKIE);
   let awaitingConfirmation = false;
   for (const order of await getPendingOrdersForUser(userId)) {
-    if ((await expireAndRelease(order)) !== "completed") continue;
+    if (
+      !order.reconcileNeeded &&
+      (await expireAndRelease(order)) !== "completed"
+    )
+      continue;
     awaitingConfirmation = true;
     await rememberCheckout(order.id);
   }
@@ -220,6 +231,8 @@ export async function cancelPendingCheckout(userId: string) {
  */
 export async function releaseStalePendingOrders({ limit = 50 } = {}) {
   const stale = await getStalePendingOrders(staleCutoff(), limit);
+  // Before trying them: one that fails now goes behind the untried ones.
+  await markSweepAttempted(stale.map((order) => order.id));
   let released = 0;
   let needsReconcile = 0;
   for (const order of stale) {

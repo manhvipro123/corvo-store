@@ -43,6 +43,13 @@
       "when": 1791286106991,
       "tag": "0005_orders_reconcile_needed",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791307606923,
+      "tag": "0006_orders_sweep_attempted",
+      "breakpoints": true
     }
   ]
 }

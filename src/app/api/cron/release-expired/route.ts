@@ -9,16 +9,22 @@ import { releaseStalePendingOrders } from "@/lib/checkout-session";
  * call it the same way. Not behind the proxy: the secret is its auth.
  */
 export async function GET(request: Request) {
-  if (!authorized(request.headers.get("authorization")))
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    // Our misconfiguration, not a bad request: say so in the logs and the
+    // cron dashboard instead of looking like a wrong secret.
+    console.error("[cron] CRON_SECRET is not set");
+    return new Response("Cron not configured", { status: 500 });
+  }
+  if (!authorized(request.headers.get("authorization"), secret))
     return new Response("Unauthorized", { status: 401 });
 
   const result = await releaseStalePendingOrders();
   return Response.json(result);
 }
 
-function authorized(header: string | null) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || !header) return false;
+function authorized(header: string | null, secret: string) {
+  if (!header) return false;
   const expected = Buffer.from(`Bearer ${secret}`);
   const given = Buffer.from(header);
   return given.length === expected.length && timingSafeEqual(given, expected);

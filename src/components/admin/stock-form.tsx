@@ -7,7 +7,7 @@ import { updateStock } from "@/app/admin/inventory/actions";
 import { useAnnounce } from "@/components/admin/inventory-status";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/field";
-import { STOCK_MAX, parseStockForm } from "@/lib/admin-validation";
+import { parseStockForm, stockFormMax } from "@/lib/admin-validation";
 
 /**
  * Inline "set available quantity" form (inventory rows and the product
@@ -70,7 +70,7 @@ export function StockForm({
           name="quantity"
           type="number"
           min={0}
-          max={STOCK_MAX}
+          max={stockFormMax(available)}
           step={1}
           inputMode="numeric"
           disabled={pending}

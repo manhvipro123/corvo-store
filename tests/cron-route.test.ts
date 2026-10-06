@@ -33,10 +33,12 @@ describe("cron: release expired checkouts", () => {
     expect(releaseStalePendingOrders).not.toHaveBeenCalled();
   });
 
-  it("refuses everything when no secret is configured", async () => {
+  it("refuses everything, as a server error, when no secret is configured", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubEnv("CRON_SECRET", "");
-    expect((await call("Bearer ")).status).toBe(401);
+    expect((await call("Bearer ")).status).toBe(500);
     expect(releaseStalePendingOrders).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith("[cron] CRON_SECRET is not set");
   });
 
   it("runs the sweep with the right secret", async () => {

@@ -63,7 +63,7 @@ export async function updateStock(
 export type StockAdjustState = {
   formError?: string;
   fieldErrors?: Partial<Record<StockAdjustField, string>>;
-  values?: Partial<Record<StockAdjustField, string>>;
+  values?: Partial<Record<StockAdjustField | "direction", string>>;
   saved?: string;
 };
 

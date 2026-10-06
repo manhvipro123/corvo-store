@@ -190,6 +190,26 @@ describe("parseStockForm", () => {
     ).toEqual({ productId: 7, expected: 4, quantity: 0 });
   });
 
+  it("caps the quantity at STOCK_MAX, or at the current stock above it", () => {
+    const parse = (expected: number, quantity: number) =>
+      parseStockForm(
+        form({
+          productId: "7",
+          expected: String(expected),
+          quantity: String(quantity),
+        }),
+      );
+    expect(parse(5, STOCK_MAX + 1).errors.quantity).toMatch(
+      String(STOCK_MAX),
+    );
+    // Released checkout units took stock past the maximum: it can still be
+    // saved unchanged or lowered, but not raised.
+    const above = STOCK_MAX + 3;
+    expect(parse(above, above).input?.quantity).toBe(above);
+    expect(parse(above, above - 1).input?.quantity).toBe(above - 1);
+    expect(parse(above, above + 1).errors.quantity).toMatch(String(above));
+  });
+
   it("rejects an unknown intent", () => {
     expect(
       parseStockForm(
@@ -276,6 +296,12 @@ describe("parseStockAdjustForm", () => {
   it("accepts the bounds", () => {
     expect(adjust({ amount: "1" }).input?.delta).toBe(1);
     expect(adjust({ amount: String(STOCK_MAX) }).input?.delta).toBe(STOCK_MAX);
+  });
+
+  it("echoes the direction with an error, so the form keeps a write-off", () => {
+    const parsed = adjust({ direction: "out", amount: "0" });
+    expect(parsed.errors.amount).toBeDefined();
+    expect(parsed.values.direction).toBe("out");
   });
 
   it("limits the note", () => {

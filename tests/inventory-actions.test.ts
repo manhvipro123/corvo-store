@@ -96,7 +96,8 @@ describe("adjustStock", () => {
     );
     const state = await adjust();
     expect(state.fieldErrors?.amount).toMatch(/Only 1 available/);
-    expect(state.values).toEqual({ amount: "2", note: "" });
+    // The direction comes back too, so the form can't reset a write-off to "add".
+    expect(state.values).toEqual({ direction: "out", amount: "2", note: "" });
     expect(revalidateStorefront).not.toHaveBeenCalled();
   });
 

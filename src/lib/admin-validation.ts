@@ -279,6 +279,9 @@ export type StockInput = {
   quantity: number;
 };
 
+/** The highest quantity the stock form accepts when stock is `current`. */
+export const stockFormMax = (current: number) => Math.max(STOCK_MAX, current);
+
 /**
  * A stock update: either a quantity, or the "Mark sold out" submit button
  * (`intent=sold-out`), which sets 0 whatever the quantity field holds.
@@ -303,11 +306,14 @@ export function parseStockForm(
     return { values: { quantity: raw.quantity }, errors: {}, invalid: true };
   const soldOut = raw.intent === "sold-out";
   const values = { quantity: soldOut ? "0" : raw.quantity };
-  const quantity = parseWholeNumber(values.quantity, 0, STOCK_MAX);
+  // Returned checkout units can lift stock past STOCK_MAX; lowering it (or
+  // saving it unchanged) must still work then.
+  const max = stockFormMax(expected);
+  const quantity = parseWholeNumber(values.quantity, 0, max);
   if (quantity === undefined)
     return {
       values,
-      errors: { quantity: `Enter a whole number from 0 to ${STOCK_MAX}.` },
+      errors: { quantity: `Enter a whole number from 0 to ${max}.` },
     };
   return { values, errors: {}, input: { productId, expected, quantity } };
 }
@@ -329,9 +335,18 @@ export type StockAdjustField = "amount" | "note";
  */
 export function parseStockAdjustForm(
   data: Source,
-): Parsed<StockAdjustField, StockAdjustInput> & { invalid?: true } {
+): Parsed<StockAdjustField, StockAdjustInput> & {
+  values: { direction: string };
+  invalid?: true;
+} {
   const raw = read(data, ["productId", "direction", "amount", "note"] as const);
-  const values = { amount: raw.amount, note: raw.note };
+  // `direction` is echoed too: React resets the form after the action, and a
+  // "remove" that fell back to "add" would turn a write-off into a delivery.
+  const values = {
+    direction: raw.direction,
+    amount: raw.amount,
+    note: raw.note,
+  };
   const productId = parseWholeNumber(raw.productId, 1, 2 ** 31 - 1);
   // Hidden or fixed-choice fields only change if the request was tampered with.
   if (

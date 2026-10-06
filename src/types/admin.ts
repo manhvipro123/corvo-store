@@ -33,10 +33,12 @@ export type InventoryRow = {
   image: ImageAsset;
   /** Units that can still be sold (open checkouts are already deducted). */
   available: number;
-  /** Units in pending checkouts still within their reservation. */
+  /** Units in pending checkouts within their reservation or grace period. */
   onHold: number;
-  /** Units in pending checkouts past their reservation, awaiting release. */
+  /** Units in pending checkouts past the grace period, awaiting the sweep. */
   staleHolds: number;
+  /** Units in checkouts paid at Stripe whose webhook never came; won't come back. */
+  needsReconcile: number;
   /** Units in checkouts whose delayed payment is still clearing. */
   processing: number;
 };

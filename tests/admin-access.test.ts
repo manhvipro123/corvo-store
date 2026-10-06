@@ -101,4 +101,31 @@ describe("admin pages", () => {
     );
     expect(source).toMatch(/await requireAdmin\(/);
   });
+
+  // ...and before it reads anything: only the route's own params may be
+  // awaited first (to build the sign-in callback path), and no DB read
+  // may even be started.
+  it.each(pages)("%s guards before reading any data", (path) => {
+    const source = readFileSync(
+      fileURLToPath(new URL(path, import.meta.url)),
+      "utf8",
+    );
+    const beforeGuard = source.slice(0, source.indexOf("await requireAdmin("));
+    for (const [awaited] of beforeGuard.matchAll(/await\s+[\w.]+/g))
+      expect(awaited).toMatch(/^await\s+(params|searchParams)$/);
+
+    const dbImports = [
+      ...source.matchAll(/import\s*{([^}]*)}\s*from\s*"@\/db\/[^"]+"/g),
+    ].flatMap(([, names]) =>
+      names
+        .split(",")
+        .map((n) => n.replace(/^\s*type\s+/, "").split(" as ").pop()!.trim())
+        .filter(Boolean),
+    );
+    const body = beforeGuard.slice(beforeGuard.lastIndexOf("import "));
+    for (const name of dbImports)
+      expect(body.split("\n").slice(1).join("\n")).not.toMatch(
+        new RegExp(`\\b${name}\\(`),
+      );
+  });
 });

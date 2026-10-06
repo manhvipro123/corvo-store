@@ -63,7 +63,8 @@ export function StockAdjustForm({ productId }: { productId: number }) {
           <select
             id="direction"
             name="direction"
-            defaultValue="in"
+            key={values.direction}
+            defaultValue={values.direction === "out" ? "out" : "in"}
             className={inputClass(undefined, "bg-background h-12")}
           >
             <option value="in">Add received units</option>

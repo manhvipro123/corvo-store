@@ -12,8 +12,6 @@ const isEventProcessed = vi.fn(async () => false);
 vi.mock("@/db/orders", () => ({ isEventProcessed }));
 const syncCheckoutSession = vi.fn();
 vi.mock("@/lib/checkout-session", () => ({ syncCheckoutSession }));
-const revalidateStorefront = vi.fn();
-vi.mock("@/lib/storefront-cache", () => ({ revalidateStorefront }));
 
 const { POST } = await import("@/app/api/stripe/webhook/route");
 
@@ -86,13 +84,16 @@ describe("Stripe webhook", () => {
       { to: "paid", from: ["pending"], release: false },
       { id: "evt_1", type: "checkout.session.completed" },
     );
-    expect(revalidateStorefront).not.toHaveBeenCalled();
   });
 
-  it("refreshes the storefront when an expiry returns stock", async () => {
+  it("applies an expiry as a release (which refreshes the storefront itself)", async () => {
     constructEvent.mockReturnValue(event("checkout.session.expired", "unpaid"));
     expect((await call()).status).toBe(200);
-    expect(revalidateStorefront).toHaveBeenCalledOnce();
+    expect(syncCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "cs_1" }),
+      expect.objectContaining({ to: "expired", release: true }),
+      { id: "evt_1", type: "checkout.session.expired" },
+    );
   });
 
   it("answers 500 when handling fails, so Stripe retries", async () => {

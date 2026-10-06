@@ -165,6 +165,7 @@ export default async function InventoryPage({
                       ["Available", row.available],
                       ["On hold", row.onHold],
                       ["Expired holds", row.staleHolds],
+                      ["Paid at Stripe", row.needsReconcile],
                       ["Processing", row.processing],
                     ] as const
                   ).map(([label, value]) => (

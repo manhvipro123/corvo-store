@@ -120,7 +120,9 @@ export async function attachCheckoutSession(
  * Moves the order to `to` if it is in one of `from`, and only then returns
  * its reserved stock and records `release` history rows. One statement, so
  * running it twice (retried webhooks, a cancel racing the expiry event or
- * the stale-checkout sweep) releases stock at most once.
+ * the stale-checkout sweep) releases stock at most once. The stock rows are
+ * locked by product id first, the same order `reserveOrder` takes them in,
+ * so a release and a reservation sharing products can't deadlock.
  */
 export function releaseOrder(
   orderId: string,
@@ -133,11 +135,20 @@ export function releaseOrder(
       where id = ${orderId} and status in ${from}
       returning id
     ),
+    locked as (
+      select s.product_id
+      from ${productStock} s
+      join ${orderItems} i on i.product_id = s.product_id
+      join moved on moved.id = i.order_id
+      order by s.product_id
+      for update of s
+    ),
     restored as (
       update ${productStock} s
       set quantity = s.quantity + i.quantity, updated_at = now()
       from ${orderItems} i
       join moved on moved.id = i.order_id
+      join locked on locked.product_id = i.product_id
       where s.product_id = i.product_id
       returning s.product_id, i.quantity as delta, s.quantity as quantity_after, i.order_id
     )
@@ -150,10 +161,12 @@ export function releaseOrder(
 }
 
 /**
- * Pending orders whose reservation ended before `before` (oldest first):
- * checkouts whose `expired` webhook never arrived, or that never got a
- * Stripe session. Orders already flagged by `markReconcileNeeded` are left
- * out, so they can't fill every batch. Uses `orders_status_expires_at_idx`.
+ * Pending orders whose reservation ended before `before`: checkouts whose
+ * `expired` webhook never arrived, or that never got a Stripe session.
+ * Orders the sweep never tried come first (oldest first), then the least
+ * recently tried, so ones it keeps failing on rotate to the back instead of
+ * filling every batch. Orders already flagged by `markReconcileNeeded` are
+ * left out. Uses `orders_status_expires_at_idx`.
  */
 export async function getStalePendingOrders(before: Date, limit: number) {
   return db
@@ -169,22 +182,36 @@ export async function getStalePendingOrders(before: Date, limit: number) {
         isNull(orders.reconcileNeededAt),
       ),
     )
-    .orderBy(asc(orders.expiresAt))
+    .orderBy(
+      sql`${orders.sweepAttemptedAt} asc nulls first`,
+      asc(orders.expiresAt),
+    )
     .limit(limit);
 }
 
+/** Records that the sweep picked these orders up (see `getStalePendingOrders`). */
+export async function markSweepAttempted(orderIds: string[]) {
+  if (!orderIds.length) return;
+  await db
+    .update(orders)
+    .set({ sweepAttemptedAt: new Date() })
+    .where(inArray(orders.id, orderIds));
+}
+
 /**
- * The user's pending orders that have a Stripe session. Orders flagged by
- * `markReconcileNeeded` were paid at Stripe, so they're left out; so are
- * orders still waiting for their session, which another request is creating
- * right now (`createCheckout` releases them if that fails, the sweep if it
- * never finishes). Uses `orders_user_id_idx`.
+ * The user's pending orders that have a Stripe session, including ones
+ * flagged by `markReconcileNeeded` (paid at Stripe, webhook missing), so
+ * checkout can refuse to charge the same bag again. Orders still waiting for
+ * their session are left out: another request is creating it right now
+ * (`createCheckout` releases them if that fails, the sweep if it never
+ * finishes). Uses `orders_user_id_idx`.
  */
 export async function getPendingOrdersForUser(userId: string) {
   return db
     .select({
       id: orders.id,
       stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+      reconcileNeeded: sql<boolean>`${orders.reconcileNeededAt} is not null`,
     })
     .from(orders)
     .where(
@@ -192,7 +219,6 @@ export async function getPendingOrdersForUser(userId: string) {
         eq(orders.userId, userId),
         eq(orders.status, "pending"),
         isNotNull(orders.stripeCheckoutSessionId),
-        isNull(orders.reconcileNeededAt),
       ),
     );
 }
@@ -248,21 +274,26 @@ export async function applyTransition(
   details: PaymentDetails,
   event?: { id: string; type: string },
 ) {
-  const move = transition.release
-    ? releaseOrder(orderId, transition)
-    : moveOrder(orderId, transition, details);
-  if (!event) {
-    await move;
-    return;
+  if (!transition.release) {
+    const move = moveOrder(orderId, transition, details);
+    if (!event) await move;
+    else await db.batch([recordEvent(event), move]);
+    return { released: false };
   }
-  // Record the event in the same transaction as its effect.
-  await db.batch([
-    db
-      .insert(stripeEvents)
-      .values({ id: event.id, type: event.type })
-      .onConflictDoNothing(),
-    move,
-  ]);
+  const release = releaseOrder(orderId, transition);
+  const result = event
+    ? (await db.batch([recordEvent(event), release]))[1]
+    : await release;
+  // Whether units came back (not when the order had already ended).
+  return { released: result.rows.length > 0 };
+}
+
+/** Recorded in the same transaction as the event's effect. */
+function recordEvent(event: { id: string; type: string }) {
+  return db
+    .insert(stripeEvents)
+    .values({ id: event.id, type: event.type })
+    .onConflictDoNothing();
 }
 
 export async function isEventProcessed(eventId: string) {

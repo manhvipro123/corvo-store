@@ -1,0 +1,1 @@
+ALTER TABLE "orders" ADD COLUMN "sweep_attempted_at" timestamp with time zone;

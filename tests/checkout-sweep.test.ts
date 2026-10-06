@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { Transition } from "@/lib/checkout";
+
 /**
  * The stale-checkout sweep releases stock only when that is safe: no Stripe
  * session at all, or Stripe confirms the session expired. A completed
@@ -9,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getStalePendingOrders = vi.fn();
 const releaseOrder = vi.fn(async () => ({ rows: [{ product_id: 1 }] }));
 const markReconcileNeeded = vi.fn();
+const markSweepAttempted = vi.fn();
 const getPendingOrdersForUser = vi.fn();
 const getOrderLines = vi.fn();
 const getOrderRecord = vi.fn();
@@ -16,17 +19,21 @@ vi.mock("@/db/orders", () => ({
   getPendingOrdersForUser,
   getStalePendingOrders,
   markReconcileNeeded,
+  markSweepAttempted,
   releaseOrder,
-  applyTransition: vi.fn(),
+  applyTransition,
   attachCheckoutSession: vi.fn(),
   getOrderLines,
   getOrderRecord,
-  reserveOrder: vi.fn(),
+  reserveOrder,
 }));
+const applyTransition = vi.fn();
+const reserveOrder = vi.fn();
 const expire = vi.fn();
 const retrieve = vi.fn();
+const create = vi.fn();
 vi.mock("@/lib/stripe", () => ({
-  stripe: { checkout: { sessions: { expire, retrieve } } },
+  stripe: { checkout: { sessions: { create, expire, retrieve } } },
   siteURL: () => "http://localhost:3000",
 }));
 const revalidateStorefront = vi.fn();
@@ -47,7 +54,9 @@ vi.mock("next/headers", () => ({
 const {
   cancelPendingCheckout,
   clearConfirmedCheckout,
+  createCheckout,
   releaseStalePendingOrders,
+  syncCheckoutSession,
 } = await import("@/lib/checkout-session");
 const EXPIRE = { to: "expired", from: ["pending"] };
 
@@ -70,6 +79,21 @@ describe("releaseStalePendingOrders", () => {
       5 * 60_000 - 1000,
     );
     expect(limit).toBe(50);
+  });
+
+  it("marks every order it picks up as tried, so failing ones rotate back", async () => {
+    getStalePendingOrders.mockResolvedValue([
+      { id: "o1", stripeCheckoutSessionId: "cs_down" },
+      { id: "o2", stripeCheckoutSessionId: null },
+    ]);
+    retrieve.mockRejectedValue(new Error("Stripe unreachable"));
+
+    expect(await releaseStalePendingOrders()).toEqual({
+      released: 1,
+      needsReconcile: 0,
+      skipped: 1,
+    });
+    expect(markSweepAttempted).toHaveBeenCalledWith(["o1", "o2"]);
   });
 
   it("releases an order that never got a Stripe session", async () => {
@@ -216,6 +240,33 @@ describe("cancelPendingCheckout", () => {
       expect.objectContaining({ httpOnly: true }),
     );
   });
+
+  it("refuses a new checkout while a reconcile-flagged order waits for its webhook", async () => {
+    getPendingOrdersForUser.mockResolvedValue([
+      { id: "o1", stripeCheckoutSessionId: "cs_paid", reconcileNeeded: true },
+      {
+        id: "o2",
+        stripeCheckoutSessionId: "cs_open",
+        reconcileNeeded: false,
+      },
+    ]);
+    retrieve.mockResolvedValue({ status: "expired" });
+
+    expect(await cancelPendingCheckout("user-1")).toBe(true);
+
+    // Stripe already reported the flagged session complete: not asked again,
+    // never released, and remembered so a resent webhook clears the bag.
+    expect(expire).not.toHaveBeenCalledWith("cs_paid");
+    expect(retrieve).not.toHaveBeenCalledWith("cs_paid");
+    expect(releaseOrder).not.toHaveBeenCalledWith("o1", EXPIRE);
+    expect(setCookie).toHaveBeenCalledWith(
+      "corvo_checkout",
+      "o1",
+      expect.objectContaining({ httpOnly: true }),
+    );
+    // Other pending checkouts still end as usual.
+    expect(releaseOrder).toHaveBeenCalledWith("o2", EXPIRE);
+  });
 });
 
 describe("clearConfirmedCheckout", () => {
@@ -244,5 +295,58 @@ describe("clearConfirmedCheckout", () => {
     getOrderRecord.mockResolvedValue(order);
     expect(await clearConfirmedCheckout("u1")).toBe(false);
     expect(removeOrderedFromBag).not.toHaveBeenCalled();
+  });
+});
+
+describe("storefront refresh after a release", () => {
+  const RELEASE: Transition = {
+    to: "expired",
+    from: ["pending"],
+    release: true,
+  };
+  const event = { id: "evt_1", type: "checkout.session.expired" };
+  const session = { id: "cs_1", client_reference_id: "o1" } as never;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getOrderRecord.mockResolvedValue({
+      id: "o1",
+      stripeCheckoutSessionId: "cs_1",
+      status: "pending",
+    });
+  });
+
+  it("refreshes when the expiry returned units", async () => {
+    applyTransition.mockResolvedValue({ released: true });
+    await syncCheckoutSession(session, RELEASE, event);
+    expect(revalidateStorefront).toHaveBeenCalledOnce();
+  });
+
+  it("doesn't refresh when the order had already ended", async () => {
+    applyTransition.mockResolvedValue({ released: false });
+    await syncCheckoutSession(session, RELEASE, event);
+    expect(revalidateStorefront).not.toHaveBeenCalled();
+  });
+
+  it("refreshes when a failed session create returns the reserved units", async () => {
+    reserveOrder.mockResolvedValue({
+      id: "o1",
+      expiresAt: new Date(Date.now() + 31 * 60_000),
+      subtotalCents: 1000,
+    });
+    create.mockRejectedValue(new Error("Stripe down"));
+    const line = {
+      productId: 1,
+      name: "Tote",
+      sku: "T-1",
+      imageUrl: "https://images.unsplash.com/photo-test",
+      unitPriceCents: 1000,
+      quantity: 1,
+    };
+
+    await expect(
+      createCheckout({ id: "user-1", email: "a@example.test" }, [line]),
+    ).rejects.toThrow("Stripe down");
+    expect(releaseOrder).toHaveBeenCalledWith("o1", EXPIRE);
+    expect(revalidateStorefront).toHaveBeenCalledOnce();
   });
 });

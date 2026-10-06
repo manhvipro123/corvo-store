@@ -67,6 +67,7 @@ export default async function EditProductPage({
               [
                 ["On hold", stock.onHold],
                 ["Expired holds", stock.staleHolds],
+                ["Paid at Stripe", stock.needsReconcile],
                 ["Processing", stock.processing],
               ] as const
             ).map(([label, value]) => (

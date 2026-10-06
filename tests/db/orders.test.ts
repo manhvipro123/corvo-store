@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { ReservedLine, Transition } from "@/lib/checkout";
 
+import { deleteTestStock, setTestStock } from "./stock";
+
 const url = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!url)("orders and stock reservation (test database)", () => {
@@ -32,11 +34,8 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   async function product(slug: string, stock: number | null) {
     const [row] =
       await sql`select id, name, sku, price_cents, image_url from products where slug = ${slug}`;
-    if (stock === null)
-      await sql`delete from product_stock where product_id = ${row.id}`;
-    else
-      await sql`insert into product_stock (product_id, quantity) values (${row.id}, ${stock})
-                on conflict (product_id) do update set quantity = ${stock}`;
+    if (stock === null) await deleteTestStock(sql, row.id);
+    else await setTestStock(sql, row.id, stock);
     return {
       productId: row.id as number,
       name: row.name as string,
@@ -227,7 +226,7 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
     expect(await stockOf(pump.productId)).toBe(3);
   });
 
-  it("lists only the user's own pending orders with a session, without reconcile-flagged ones", async () => {
+  it("lists only the user's own pending orders with a session, marking reconcile-flagged ones", async () => {
     const other = `orders-test-${crypto.randomUUID().slice(0, 8)}`;
     await sql`insert into users (id, name, email, created_at, updated_at)
               values (${other}, 'Other', ${`${other}@example.test`}, now(), now())`;
@@ -248,9 +247,22 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
       await orders.markReconcileNeeded(flagged.id);
       await orders.reserveOrder({ userId, lines: [line] });
 
-      expect(await orders.getPendingOrdersForUser(other)).toEqual([
-        { id: mine.id, stripeCheckoutSessionId: `cs_test_${mine.id}` },
-      ]);
+      const pending = await orders.getPendingOrdersForUser(other);
+      expect(pending).toHaveLength(2);
+      expect(pending).toEqual(
+        expect.arrayContaining([
+          {
+            id: mine.id,
+            stripeCheckoutSessionId: `cs_test_${mine.id}`,
+            reconcileNeeded: false,
+          },
+          {
+            id: flagged.id,
+            stripeCheckoutSessionId: `cs_test_${flagged.id}`,
+            reconcileNeeded: true,
+          },
+        ]),
+      );
     } finally {
       await sql`delete from orders where user_id = ${other}`;
       await sql`delete from users where id = ${other}`;

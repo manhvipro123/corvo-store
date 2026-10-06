@@ -101,6 +101,30 @@ const form = (values: Record<string, string>) => {
   return data;
 };
 
+const product = {
+  name: "Silk Scarf",
+  slug: "silk-scarf-ivory",
+  sku: "CV-AC-2001",
+  categoryId: "4",
+  color: "white",
+  price: "1250",
+  description: "A scarf.",
+  details: "Silk twill",
+  imageUrl: "https://images.unsplash.com/photo-123?w=2000",
+  imageAlt: "Ivory scarf",
+  imageFit: "contain",
+  position: "",
+  stock: "3",
+};
+const category = {
+  name: "Scarves",
+  slug: "scarves",
+  description: "Silk.",
+  position: "",
+};
+const productActions = () => import("@/app/admin/products/actions");
+const categoryActions = () => import("@/app/admin/categories/actions");
+
 describe("admin Server Actions", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -155,11 +179,43 @@ describe("admin Server Actions", () => {
         ),
       checkout.releaseStalePendingOrders,
     ],
+    [
+      "createProduct",
+      () => productActions().then((m) => m.createProduct({}, form(product))),
+      catalog.createProduct,
+    ],
+    [
+      "updateProduct",
+      () =>
+        productActions().then((m) => m.updateProduct(1, {}, form(product))),
+      catalog.updateProduct,
+    ],
+    [
+      "createCategory",
+      () =>
+        categoryActions().then((m) => m.createCategory({}, form(category))),
+      catalog.createCategory,
+    ],
+    [
+      "updateCategory",
+      () =>
+        categoryActions().then((m) =>
+          m.updateCategory(1, {}, form(category)),
+        ),
+      catalog.updateCategory,
+    ],
+    [
+      "deleteCategory",
+      () => categoryActions().then((m) => m.deleteCategory(1)),
+      catalog.deleteCategory,
+    ],
   ] as const)("%s writes only after requireAdmin", async (_, run, write) => {
     vi.mocked(requireAdmin).mockResolvedValue(admin as never);
     await run();
     const check = vi.mocked(requireAdmin).mock.invocationCallOrder[0];
     const written = vi.mocked(write).mock.invocationCallOrder[0];
+    // The valid input must reach the write, or this proves nothing.
+    expect(written).toBeDefined();
     expect(written).toBeGreaterThan(check);
   });
 

@@ -386,31 +386,43 @@ const available = sql<number>`coalesce(${productStock.quantity}, 0)`;
 
 /**
  * Units each product has in unfinished checkouts. All were deducted from
- * `product_stock` at reservation: `onHold` (pending, still within the
- * reservation), `staleHolds` (pending past it, waiting for the expiry
- * webhook or the sweep) and `processing` (delayed payment clearing).
+ * `product_stock` at reservation: `onHold` (pending, within the reservation
+ * or its grace period, so the expiry webhook may still come), `staleHolds`
+ * (pending past `staleCutoff()`: exactly what the sweep picks up),
+ * `needsReconcile` (pending, flagged because Stripe completed them without
+ * our webhook: paid, so they won't come back) and `processing` (delayed
+ * payment clearing). Same buckets as `getInventoryCounts`.
  */
-const holds = db
-  .select({
-    productId: orderItems.productId,
-    onHold:
-      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'pending' and ${orders.expiresAt} > now()), 0)`.as(
-        "on_hold",
-      ),
-    staleHolds:
-      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'pending' and ${orders.expiresAt} <= now()), 0)`.as(
-        "stale_holds",
-      ),
-    processing:
-      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'processing'), 0)`.as(
-        "processing",
-      ),
-  })
-  .from(orderItems)
-  .innerJoin(orders, eq(orders.id, orderItems.orderId))
-  .where(inArray(orders.status, ["pending", "processing"]))
-  .groupBy(orderItems.productId)
-  .as("holds");
+function holds() {
+  const cutoff = staleCutoff().toISOString();
+  const pending = sql`${orders.status} = 'pending'`;
+  const unflagged = sql`${pending} and ${orders.reconcileNeededAt} is null`;
+  return db
+    .select({
+      productId: orderItems.productId,
+      onHold:
+        sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${unflagged} and ${orders.expiresAt} >= ${cutoff}), 0)`.as(
+          "on_hold",
+        ),
+      staleHolds:
+        sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${unflagged} and ${orders.expiresAt} < ${cutoff}), 0)`.as(
+          "stale_holds",
+        ),
+      needsReconcile:
+        sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${pending} and ${orders.reconcileNeededAt} is not null), 0)`.as(
+          "needs_reconcile",
+        ),
+      processing:
+        sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'processing'), 0)`.as(
+          "processing",
+        ),
+    })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(inArray(orders.status, ["pending", "processing"]))
+    .groupBy(orderItems.productId)
+    .as("holds");
+}
 
 export const INVENTORY_PAGE_SIZE = 50;
 
@@ -421,6 +433,7 @@ function stockStatusFilter(status: "low-stock" | "sold-out" | undefined) {
 }
 
 function selectInventory() {
+  const held = holds();
   return db
     .select({
       id: products.id,
@@ -432,14 +445,17 @@ function selectInventory() {
       imageAlt: products.imageAlt,
       imageFit: products.imageFit,
       available: available.mapWith(Number),
-      onHold: sql<number>`coalesce(${holds.onHold}, 0)`.mapWith(Number),
-      staleHolds: sql<number>`coalesce(${holds.staleHolds}, 0)`.mapWith(Number),
-      processing: sql<number>`coalesce(${holds.processing}, 0)`.mapWith(Number),
+      onHold: sql<number>`coalesce(${held.onHold}, 0)`.mapWith(Number),
+      staleHolds: sql<number>`coalesce(${held.staleHolds}, 0)`.mapWith(Number),
+      needsReconcile: sql<number>`coalesce(${held.needsReconcile}, 0)`.mapWith(
+        Number,
+      ),
+      processing: sql<number>`coalesce(${held.processing}, 0)`.mapWith(Number),
     })
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productStock, eq(productStock.productId, products.id))
-    .leftJoin(holds, eq(holds.productId, products.id));
+    .leftJoin(held, eq(held.productId, products.id));
 }
 
 function toInventoryRow({
@@ -531,7 +547,12 @@ export async function getInventoryCounts() {
   return row;
 }
 
-/** A product's latest stock changes, newest first, with the admin's name. */
+/**
+ * A product's latest stock changes, newest first, with the admin's name.
+ * Ordered by id, not `created_at`: every change locks the product's stock
+ * row before inserting its history row, so per product ids follow the real
+ * order, while `created_at` is each transaction's start time.
+ */
 export async function getStockMovements(
   productId: number,
   limit = 20,
@@ -550,7 +571,7 @@ export async function getStockMovements(
     .from(stockMovements)
     .leftJoin(users, eq(users.id, stockMovements.actorUserId))
     .where(eq(stockMovements.productId, productId))
-    .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id))
+    .orderBy(desc(stockMovements.id))
     .limit(limit);
 }
 
