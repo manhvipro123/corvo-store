@@ -2,8 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { SectionHeader } from "@/components/ui/section-header";
-import { getAdminCategories, getInventory } from "@/db/queries";
-import { getStockStatus } from "@/lib/catalog";
+import { getAdminCategories, getInventoryCounts } from "@/db/queries";
 import { requireAdmin } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Admin" };
@@ -11,17 +10,15 @@ export const metadata: Metadata = { title: "Admin" };
 /** Catalog counts, each linking to where it can be acted on. */
 export default async function AdminPage() {
   await requireAdmin("/admin");
-  const [inventory, categories] = await Promise.all([
-    getInventory({}),
+  const [counts, categories] = await Promise.all([
+    getInventoryCounts(),
     getAdminCategories(),
   ]);
-  const count = (status: ReturnType<typeof getStockStatus>) =>
-    inventory.filter((row) => getStockStatus(row.available) === status).length;
   const stats = [
-    ["Products", inventory.length, "/admin/products"],
+    ["Products", counts.products, "/admin/products"],
     ["Categories", categories.length, "/admin/categories"],
-    ["Sold out", count("sold-out"), "/admin/inventory?status=sold-out"],
-    ["Low stock", count("low-stock"), "/admin/inventory?status=low-stock"],
+    ["Sold out", counts.soldOut, "/admin/inventory?status=sold-out"],
+    ["Low stock", counts.lowStock, "/admin/inventory?status=low-stock"],
   ] as const;
 
   return (
@@ -40,6 +37,19 @@ export default async function AdminPage() {
           </li>
         ))}
       </ul>
+      {counts.staleHolds > 0 && (
+        <p className="text-meta mt-6">
+          {counts.staleHolds} expired{" "}
+          {counts.staleHolds === 1 ? "checkout is" : "checkouts are"} still
+          holding stock.{" "}
+          <Link
+            href="/admin/inventory"
+            className="underline underline-offset-2 hover:opacity-70"
+          >
+            Release in Inventory
+          </Link>
+        </p>
+      )}
     </section>
   );
 }

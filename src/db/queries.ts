@@ -21,6 +21,7 @@ import {
   orders,
   productStock,
   products,
+  stockMovements,
 } from "@/db/schema";
 import { type CatalogFilters, LOW_STOCK_THRESHOLD } from "@/lib/catalog";
 import { escapeLike, searchTerms } from "@/lib/search";
@@ -31,6 +32,7 @@ import type {
   AdminOrderListItem,
   AdminProduct,
   InventoryRow,
+  StockMovement,
 } from "@/types/admin";
 import type {
   Category,
@@ -382,15 +384,43 @@ export async function getAdminCategory(
 const available = sql<number>`coalesce(${productStock.quantity}, 0)`;
 
 /**
- * Stock per product. `available` is what can still be sold; units in
- * pending checkouts were deducted at reservation and are shown as `onHold`.
+ * Units each product has in unfinished checkouts. All were deducted from
+ * `product_stock` at reservation: `onHold` (pending, still within the
+ * reservation), `staleHolds` (pending past it, waiting for the expiry
+ * webhook or the sweep) and `processing` (delayed payment clearing).
  */
-export async function getInventory({
-  status,
-}: {
-  status?: "low-stock" | "sold-out";
-}): Promise<InventoryRow[]> {
-  const rows = await db
+const holds = db
+  .select({
+    productId: orderItems.productId,
+    onHold:
+      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'pending' and ${orders.expiresAt} > now()), 0)`.as(
+        "on_hold",
+      ),
+    staleHolds:
+      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'pending' and ${orders.expiresAt} <= now()), 0)`.as(
+        "stale_holds",
+      ),
+    processing:
+      sql<number>`coalesce(sum(${orderItems.quantity}) filter (where ${orders.status} = 'processing'), 0)`.as(
+        "processing",
+      ),
+  })
+  .from(orderItems)
+  .innerJoin(orders, eq(orders.id, orderItems.orderId))
+  .where(inArray(orders.status, ["pending", "processing"]))
+  .groupBy(orderItems.productId)
+  .as("holds");
+
+export const INVENTORY_PAGE_SIZE = 50;
+
+function stockStatusFilter(status: "low-stock" | "sold-out" | undefined) {
+  if (status === "sold-out") return sql`${available} <= 0`;
+  if (status === "low-stock")
+    return sql`${available} between 1 and ${LOW_STOCK_THRESHOLD}`;
+}
+
+function selectInventory() {
+  return db
     .select({
       id: products.id,
       slug: products.slug,
@@ -401,30 +431,114 @@ export async function getInventory({
       imageAlt: products.imageAlt,
       imageFit: products.imageFit,
       available: available.mapWith(Number),
-      onHold: sql<number>`(
-        select coalesce(sum(${orderItems.quantity}), 0)
-        from ${orderItems}
-        inner join ${orders} on ${orders.id} = ${orderItems.orderId}
-        where ${orderItems.productId} = ${products.id}
-          and ${orders.status} = 'pending'
-      )`.mapWith(Number),
+      onHold: sql<number>`coalesce(${holds.onHold}, 0)`.mapWith(Number),
+      staleHolds: sql<number>`coalesce(${holds.staleHolds}, 0)`.mapWith(Number),
+      processing: sql<number>`coalesce(${holds.processing}, 0)`.mapWith(Number),
     })
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productStock, eq(productStock.productId, products.id))
-    .where(
-      status === "sold-out"
-        ? sql`${available} <= 0`
-        : status === "low-stock"
-          ? sql`${available} between 1 and ${LOW_STOCK_THRESHOLD}`
-          : undefined,
-    )
-    .orderBy(asc(products.position), asc(products.id));
+    .leftJoin(holds, eq(holds.productId, products.id));
+}
 
-  return rows.map(({ imageUrl, imageAlt, imageFit, ...row }) => ({
-    ...row,
-    image: { src: imageUrl, alt: imageAlt, fit: imageFit },
-  }));
+function toInventoryRow({
+  imageUrl,
+  imageAlt,
+  imageFit,
+  ...row
+}: Awaited<ReturnType<typeof selectInventory>>[number]): InventoryRow {
+  return { ...row, image: { src: imageUrl, alt: imageAlt, fit: imageFit } };
+}
+
+/**
+ * Stock per product in "Recommended" order, one page at a time, optionally
+ * narrowed by stock status, category and name/SKU/slug search.
+ */
+export async function getInventory({
+  status,
+  category,
+  query,
+  page,
+}: {
+  status?: "low-stock" | "sold-out";
+  category?: string;
+  query?: string;
+  /** 1-based. */
+  page: number;
+}): Promise<{ rows: InventoryRow[]; hasNextPage: boolean }> {
+  const rows = await selectInventory()
+    .where(
+      and(
+        stockStatusFilter(status),
+        category ? eq(categories.slug, category) : undefined,
+        ...adminProductSearch(query),
+      ),
+    )
+    .orderBy(asc(products.position), asc(products.id))
+    // One extra row tells whether there is a next page.
+    .limit(INVENTORY_PAGE_SIZE + 1)
+    .offset((page - 1) * INVENTORY_PAGE_SIZE);
+
+  return {
+    rows: rows.slice(0, INVENTORY_PAGE_SIZE).map(toInventoryRow),
+    hasNextPage: rows.length > INVENTORY_PAGE_SIZE,
+  };
+}
+
+/** One product's stock and holds (the product page's Availability section). */
+export async function getInventoryItem(
+  productId: number,
+): Promise<InventoryRow | undefined> {
+  const [row] = await selectInventory()
+    .where(eq(products.id, productId))
+    .limit(1);
+  return row && toInventoryRow(row);
+}
+
+/** Catalog-wide stock counts for the admin overview, in one query. */
+export async function getInventoryCounts() {
+  const [row] = await db
+    .select({
+      products: sql<number>`count(*)`.mapWith(Number),
+      soldOut:
+        sql<number>`count(*) filter (where ${stockStatusFilter("sold-out")})`.mapWith(
+          Number,
+        ),
+      lowStock:
+        sql<number>`count(*) filter (where ${stockStatusFilter("low-stock")})`.mapWith(
+          Number,
+        ),
+      staleHolds: sql<number>`(
+        select count(*) from ${orders}
+        where ${orders.status} = 'pending' and ${orders.expiresAt} <= now()
+      )`.mapWith(Number),
+    })
+    .from(products)
+    .leftJoin(productStock, eq(productStock.productId, products.id));
+  return row;
+}
+
+/** A product's latest stock changes, newest first, with the admin's name. */
+export async function getStockMovements(
+  productId: number,
+  limit = 20,
+): Promise<StockMovement[]> {
+  return db
+    .select({
+      id: stockMovements.id,
+      delta: stockMovements.delta,
+      quantityAfter: stockMovements.quantityAfter,
+      reason: stockMovements.reason,
+      orderId: stockMovements.orderId,
+      note: stockMovements.note,
+      actorName: users.name,
+      createdAt: stockMovements.createdAt,
+    })
+    .from(stockMovements)
+    .leftJoin(users, eq(users.id, stockMovements.actorUserId))
+    .where(eq(stockMovements.productId, productId))
+    .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id))
+    .limit(limit);
 }
 
 export const ADMIN_ORDERS_PAGE_SIZE = 50;

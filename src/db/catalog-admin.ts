@@ -3,16 +3,23 @@ import "server-only";
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { categories, productStock, products } from "@/db/schema";
-import type {
-  CategoryInput,
-  ProductInput,
-  StockInput,
+import {
+  categories,
+  productStock,
+  products,
+  stockMovements,
+} from "@/db/schema";
+import {
+  type CategoryInput,
+  type ProductInput,
+  STOCK_MAX,
+  type StockAdjustInput,
+  type StockInput,
 } from "@/lib/admin-validation";
 
 /**
  * Catalog writes for the admin area. Callers (Server Actions) check
- * `requireAdmin` first; nothing here knows who is asking.
+ * `requireAdmin` first and pass the admin's user id for the stock history.
  */
 
 /** A unique column (slug or SKU) already holds this value. */
@@ -46,6 +53,20 @@ export class CategoryInUseError extends Error {
 export class StockChangedError extends Error {
   constructor(readonly current: number) {
     super("Stock changed since it was loaded.");
+  }
+}
+
+/** A write-off larger than the units available. */
+export class InsufficientStockError extends Error {
+  constructor(readonly current: number) {
+    super("Not enough stock to remove that many units.");
+  }
+}
+
+/** An addition that would take stock above `STOCK_MAX`. */
+export class StockLimitError extends Error {
+  constructor(readonly current: number) {
+    super("Stock would exceed the maximum.");
   }
 }
 
@@ -84,13 +105,21 @@ const productValues = ({ position, ...input }: ProductInput) => ({
 });
 
 /**
- * Inserts the product and its starting stock row in one transaction (`db.batch`):
- * the stock insert finds the new row by its (unique) slug.
+ * Inserts the product, its starting stock row and (for stock > 0) the
+ * `initial` history row in one transaction (`db.batch`): the later inserts
+ * find the new product by its (unique) slug.
  */
 export async function createProduct(
   input: ProductInput,
   stock: number,
+  actorUserId: string,
 ): Promise<number> {
+  const opening = db.execute(sql`
+    insert into ${stockMovements}
+      (product_id, delta, quantity_after, reason, actor_user_id)
+    select id, ${stock}, ${stock}, 'initial', ${actorUserId}
+    from ${products} where slug = ${input.slug}
+  `);
   try {
     const [[created]] = await db.batch([
       db
@@ -110,6 +139,7 @@ export async function createProduct(
           .from(products)
           .where(eq(products.slug, input.slug)),
       ),
+      ...(stock > 0 ? [opening] : []),
     ]);
     return created.id;
   } catch (error) {
@@ -178,34 +208,85 @@ export async function deleteCategory(id: number) {
   if (!deleted.length) throw new NotFoundError();
 }
 
-/**
- * Sets a product's available quantity, but only if it still is what the
- * admin saw (`expected`): a checkout that reserved units in the meantime
- * must not be overwritten. A missing stock row counts as 0 and is created.
- */
-export async function setStock({ productId, expected, quantity }: StockInput) {
-  let written: { quantity: number }[];
-  try {
-    written = await db
-      .insert(productStock)
-      .values({ productId, quantity })
-      .onConflictDoUpdate({
-        target: productStock.productId,
-        set: { quantity, updatedAt: sql`now()` },
-        setWhere: eq(productStock.quantity, expected),
-      })
-      .returning({ quantity: productStock.quantity });
-  } catch (error) {
-    // No such product (the stock row's foreign key).
-    if (pgError(error)?.code === "23503") throw new NotFoundError();
-    throw error;
-  }
-  if (written.length) return;
-
-  // No row written: the quantity no longer matches `expected`.
-  const [current] = await db
+/** The product's stock quantity, or undefined when there is no such product. */
+async function currentStock(productId: number) {
+  const [row] = await db
     .select({ quantity: productStock.quantity })
     .from(productStock)
     .where(eq(productStock.productId, productId));
-  throw new StockChangedError(current?.quantity ?? 0);
+  return row?.quantity;
+}
+
+/**
+ * Sets a product's available quantity, but only if it still is what the
+ * admin saw (`expected`): a checkout that reserved or released units in the
+ * meantime must not be overwritten. The change and its `admin_set` history
+ * row are one statement; `delta` is exact because the write only happens
+ * when the current quantity equals `expected`.
+ */
+export async function setStock(
+  { productId, expected, quantity }: StockInput,
+  actorUserId: string,
+) {
+  if (quantity !== expected) {
+    const written = await db.execute(sql`
+      with updated as (
+        update ${productStock}
+        set quantity = ${quantity}, updated_at = now()
+        where product_id = ${productId} and quantity = ${expected}
+        returning quantity
+      )
+      insert into ${stockMovements}
+        (product_id, delta, quantity_after, reason, actor_user_id)
+      select ${productId}, ${quantity - expected}, quantity, 'admin_set', ${actorUserId}
+      from updated
+      returning quantity_after
+    `);
+    if (written.rows.length) return;
+  }
+
+  // Nothing written (or nothing to change): say why, if anything is wrong.
+  const current = await currentStock(productId);
+  if (current === undefined) throw new NotFoundError();
+  if (current !== expected) throw new StockChangedError(current);
+}
+
+/**
+ * Adds `delta` units (negative to write some off). Combines safely with
+ * concurrent reservations and releases, so no `expected` check is needed;
+ * the non-negative check and `STOCK_MAX` bound the result.
+ */
+export async function adjustStock({
+  productId,
+  delta,
+  note,
+  actorUserId,
+}: StockAdjustInput & { actorUserId: string }) {
+  let written: { rows: unknown[] };
+  try {
+    written = await db.execute(sql`
+      with updated as (
+        update ${productStock}
+        set quantity = quantity + ${delta}, updated_at = now()
+        where product_id = ${productId}
+          and (${delta} < 0 or quantity + ${delta} <= ${STOCK_MAX})
+        returning quantity
+      )
+      insert into ${stockMovements}
+        (product_id, delta, quantity_after, reason, actor_user_id, note)
+      select ${productId}, ${delta}, quantity, 'admin_adjust', ${actorUserId}, ${note ?? null}
+      from updated
+      returning quantity_after
+    `);
+  } catch (error) {
+    // `product_stock_quantity_non_negative`: more written off than there is.
+    if (pgError(error)?.code === "23514")
+      throw new InsufficientStockError((await currentStock(productId)) ?? 0);
+    throw error;
+  }
+  if (written.rows.length) return;
+
+  const current = await currentStock(productId);
+  if (current === undefined) throw new NotFoundError();
+  throw new StockLimitError(current);
 }

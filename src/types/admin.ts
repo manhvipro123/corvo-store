@@ -33,8 +33,25 @@ export type InventoryRow = {
   image: ImageAsset;
   /** Units that can still be sold (open checkouts are already deducted). */
   available: number;
-  /** Units reserved by pending checkouts; they return if a checkout expires. */
+  /** Units in pending checkouts still within their reservation. */
   onHold: number;
+  /** Units in pending checkouts past their reservation, awaiting release. */
+  staleHolds: number;
+  /** Units in checkouts whose delayed payment is still clearing. */
+  processing: number;
+};
+
+/** One row of a product's stock history (`stock_movements`). */
+export type StockMovement = {
+  id: number;
+  delta: number;
+  quantityAfter: number;
+  reason: "initial" | "admin_set" | "admin_adjust" | "reserve" | "release";
+  orderId: string | null;
+  note: string | null;
+  /** The admin behind a manual change, if their account still exists. */
+  actorName: string | null;
+  createdAt: Date;
 };
 
 export type AdminOrderListItem = OrderListItem & {

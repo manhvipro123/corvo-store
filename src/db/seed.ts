@@ -12,6 +12,7 @@ import {
   orders,
   productStock,
   products,
+  stockMovements,
 } from "./schema";
 import { seedCategories, seedProducts } from "./seed-data";
 
@@ -27,7 +28,7 @@ export async function seed(url: string) {
   // the wrong pieces.
   await db.batch([
     db.execute(
-      sql`truncate table ${orderItems}, ${orders}, ${productStock}, ${products}, ${categories} restart identity cascade`,
+      sql`truncate table ${stockMovements}, ${orderItems}, ${orders}, ${productStock}, ${products}, ${categories} restart identity cascade`,
     ),
     db.insert(categories).values(
       seedCategories.map((c, i) => ({
@@ -58,6 +59,12 @@ export async function seed(url: string) {
         quantity: p.stock,
       })),
     ),
+    // Opening balance, so sum(delta) per product equals its quantity.
+    db.execute(sql`
+      insert into ${stockMovements} (product_id, delta, quantity_after, reason, note)
+      select product_id, quantity, quantity, 'initial', 'Seed data'
+      from ${productStock} where quantity > 0
+    `),
   ]);
 
   return {

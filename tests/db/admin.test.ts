@@ -53,7 +53,7 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
   });
 
   it("creates a product with its stock row, last in Recommended order", async () => {
-    const id = await admin.createProduct(input(), 4);
+    const id = await admin.createProduct(input(), 4, userId);
     expect(await stockOf(id)).toBe(4);
 
     const product = await q.getAdminProduct(id);
@@ -71,10 +71,14 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
 
   it("reports duplicate slugs and SKUs by field, writing nothing", async () => {
     await expect(
-      admin.createProduct(input({ sku: `OTHER-${tag}`.toUpperCase() }), 1),
+      admin.createProduct(
+        input({ sku: `OTHER-${tag}`.toUpperCase() }),
+        1,
+        userId,
+      ),
     ).rejects.toMatchObject({ field: "slug" });
     await expect(
-      admin.createProduct(input({ slug: `other-tote-${tag}` }), 1),
+      admin.createProduct(input({ slug: `other-tote-${tag}` }), 1, userId),
     ).rejects.toMatchObject({ field: "sku" });
     expect(
       await sql`select id from products where slug = ${`other-tote-${tag}`}`,
@@ -90,6 +94,7 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
           categoryId: 999_999,
         }),
         1,
+        userId,
       ),
     ).rejects.toBeInstanceOf(admin.UnknownCategoryError);
   });
@@ -113,26 +118,24 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
 
   it("sets stock only when it still matches what the admin saw", async () => {
     const [product] = await q.getAdminProducts({ query: tag });
-    await admin.setStock({ productId: product.id, expected: 4, quantity: 7 });
+    await admin.setStock(
+      { productId: product.id, expected: 4, quantity: 7 },
+      userId,
+    );
     expect(await stockOf(product.id)).toBe(7);
 
-    const stale = admin.setStock({
-      productId: product.id,
-      expected: 4,
-      quantity: 1,
-    });
+    const stale = admin.setStock(
+      { productId: product.id, expected: 4, quantity: 1 },
+      userId,
+    );
     await expect(stale).rejects.toBeInstanceOf(admin.StockChangedError);
     await expect(stale).rejects.toMatchObject({ current: 7 });
     expect(await stockOf(product.id)).toBe(7);
   });
 
-  it("creates a missing stock row", async () => {
-    const [product] = await q.getAdminProducts({ query: tag });
-    await sql`delete from product_stock where product_id = ${product.id}`;
-    await admin.setStock({ productId: product.id, expected: 0, quantity: 2 });
-    expect(await stockOf(product.id)).toBe(2);
+  it("refuses to set stock for an unknown product", async () => {
     await expect(
-      admin.setStock({ productId: 999_999, expected: 0, quantity: 1 }),
+      admin.setStock({ productId: 999_999, expected: 0, quantity: 1 }, userId),
     ).rejects.toBeInstanceOf(admin.NotFoundError);
   });
 
@@ -144,13 +147,25 @@ describe.skipIf(!url)("admin catalog reads and writes (test database)", () => {
     await sql`insert into order_items (order_id, product_id, product_name, product_sku, unit_price_cents, quantity)
               values (${orderId}, ${product.id}, 'x', 'x', 0, 3)`;
 
-    const low = await q.getInventory({ status: "low-stock" });
-    expect(low.find((r) => r.id === product.id)).toMatchObject({
+    await admin.setStock(
+      { productId: product.id, expected: 7, quantity: 2 },
+      userId,
+    );
+    const low = await q.getInventory({
+      status: "low-stock",
+      query: tag,
+      page: 1,
+    });
+    expect(low.rows.find((r) => r.id === product.id)).toMatchObject({
       available: 2,
       onHold: 3,
     });
-    const soldOut = await q.getInventory({ status: "sold-out" });
-    expect(soldOut.some((r) => r.id === product.id)).toBe(false);
+    const soldOut = await q.getInventory({
+      status: "sold-out",
+      query: tag,
+      page: 1,
+    });
+    expect(soldOut.rows.some((r) => r.id === product.id)).toBe(false);
   });
 
   it("lists every customer's orders by status, and finds any order", async () => {

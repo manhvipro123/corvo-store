@@ -42,14 +42,14 @@ export async function createProduct(
   _prev: ProductFormState,
   data: FormData,
 ): Promise<ProductFormState> {
-  await requireAdmin("/admin/products/new");
+  const { user } = await requireAdmin("/admin/products/new");
 
   const { values, errors, input, stock } = parseProductForm(data, "create");
   if (!input) return { fieldErrors: errors, values };
 
   let id: number;
   try {
-    id = await catalog.createProduct(input, stock ?? 0);
+    id = await catalog.createProduct(input, stock ?? 0, user.id);
   } catch (error) {
     return writeError(error, values);
   }

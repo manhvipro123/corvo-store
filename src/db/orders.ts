@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -8,6 +8,7 @@ import {
   orderItems,
   orders,
   productStock,
+  stockMovements,
   stripeEvents,
 } from "@/db/schema";
 import {
@@ -65,17 +66,26 @@ export async function reserveOrder({
         })),
       ),
       // Same order (by product id) in every reservation, so two of them
-      // can't deadlock on each other's rows.
+      // can't deadlock on each other's rows. Each decrement writes its
+      // `reserve` history row in the same statement.
       ...sorted.map((l) =>
-        db
-          .update(productStock)
-          .set({ quantity: sql`${productStock.quantity} - ${l.quantity}` })
-          .where(eq(productStock.productId, l.productId))
-          .returning({ productId: productStock.productId }),
+        db.execute(sql`
+          with updated as (
+            update ${productStock}
+            set quantity = quantity - ${l.quantity}, updated_at = now()
+            where product_id = ${l.productId}
+            returning product_id, quantity
+          )
+          insert into ${stockMovements}
+            (product_id, delta, quantity_after, reason, order_id)
+          select product_id, ${-l.quantity}, quantity, 'reserve', ${id}
+          from updated
+          returning product_id
+        `),
       ),
     ]);
     // A product without a stock row updates nothing: undo and treat as sold out.
-    if (updates.some((rows) => rows.length === 0)) {
+    if (updates.some((result) => result.rows.length === 0)) {
       await releaseOrder(id, { to: "expired", from: ["pending"] });
       throw new OutOfStockError();
     }
@@ -99,8 +109,9 @@ export async function attachCheckoutSession(
 
 /**
  * Moves the order to `to` if it is in one of `from`, and only then returns
- * its reserved stock. One statement, so running it twice (retried webhooks,
- * a cancel racing the expiry event) releases stock at most once.
+ * its reserved stock and records `release` history rows. One statement, so
+ * running it twice (retried webhooks, a cancel racing the expiry event or
+ * the stale-checkout sweep) releases stock at most once.
  */
 export function releaseOrder(
   orderId: string,
@@ -112,13 +123,38 @@ export function releaseOrder(
       set status = ${to}, updated_at = now()
       where id = ${orderId} and status in ${from}
       returning id
+    ),
+    restored as (
+      update ${productStock} s
+      set quantity = s.quantity + i.quantity, updated_at = now()
+      from ${orderItems} i
+      join moved on moved.id = i.order_id
+      where s.product_id = i.product_id
+      returning s.product_id, i.quantity as delta, s.quantity as quantity_after, i.order_id
     )
-    update ${productStock} s
-    set quantity = s.quantity + i.quantity, updated_at = now()
-    from ${orderItems} i
-    join moved on moved.id = i.order_id
-    where s.product_id = i.product_id
+    insert into ${stockMovements}
+      (product_id, delta, quantity_after, reason, order_id)
+    select product_id, delta, quantity_after, 'release', order_id
+    from restored
+    returning product_id
   `);
+}
+
+/**
+ * Pending orders whose reservation ended before `before` (oldest first):
+ * checkouts whose `expired` webhook never arrived, or that never got a
+ * Stripe session. Uses `orders_status_expires_at_idx`.
+ */
+export async function getStalePendingOrders(before: Date, limit: number) {
+  return db
+    .select({
+      id: orders.id,
+      stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+    })
+    .from(orders)
+    .where(and(eq(orders.status, "pending"), lt(orders.expiresAt, before)))
+    .orderBy(asc(orders.expiresAt))
+    .limit(limit);
 }
 
 export type PaymentDetails = {

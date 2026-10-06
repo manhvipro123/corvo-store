@@ -176,6 +176,57 @@ export const stripeEvents = pgTable("stripe_events", {
   createdAt: timestamps.createdAt,
 });
 
+/** Why a product's stock changed (see `stock_movements`). */
+export const stockMovementReason = pgEnum("stock_movement_reason", [
+  "initial",
+  "admin_set",
+  "admin_adjust",
+  "reserve",
+  "release",
+]);
+
+/**
+ * Append-only history of `product_stock.quantity`. Every change writes one
+ * row in the same statement or batch as the change itself, so per product
+ * `sum(delta)` always equals the current quantity.
+ */
+export const stockMovements = pgTable(
+  "stock_movements",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    delta: integer("delta").notNull(),
+    /** `product_stock.quantity` right after this change. */
+    quantityAfter: integer("quantity_after").notNull(),
+    reason: stockMovementReason("reason").notNull(),
+    /** The checkout that reserved or released the units. */
+    orderId: text("order_id").references(() => orders.id, {
+      onDelete: "set null",
+    }),
+    /** Admin who made a manual change. No FK: auth tables stay separate. */
+    actorUserId: text("actor_user_id"),
+    note: text("note"),
+    createdAt: timestamps.createdAt,
+  },
+  (t) => [
+    check("stock_movements_delta_non_zero", sql`${t.delta} <> 0`),
+    check(
+      "stock_movements_quantity_after_non_negative",
+      sql`${t.quantityAfter} >= 0`,
+    ),
+    check(
+      "stock_movements_note_length",
+      sql`${t.note} is null or char_length(${t.note}) <= 200`,
+    ),
+    index("stock_movements_product_id_created_at_idx").on(
+      t.productId,
+      t.createdAt.desc(),
+    ),
+  ],
+);
+
 export const categoriesRelations = relations(categories, ({ many }) => ({
   products: many(products),
 }));

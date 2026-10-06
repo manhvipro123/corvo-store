@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  STOCK_MAX,
   isAllowedImageUrl,
   parseCategoryForm,
   parsePriceCents,
   parseProductForm,
+  parseStockAdjustForm,
   parseStockForm,
   priceInputValue,
   slugify,
@@ -240,5 +242,49 @@ describe("admin URL state", () => {
     ]);
     expect(orderFilterStatuses("pending")).toEqual(["pending"]);
     expect(orderFilterStatuses("all")).toBeUndefined();
+  });
+});
+
+describe("parseStockAdjustForm", () => {
+  const adjust = (values: Record<string, string>) =>
+    parseStockAdjustForm(
+      form({
+        productId: "7",
+        direction: "in",
+        amount: "1",
+        note: "",
+        ...values,
+      }),
+    );
+
+  it("turns direction and amount into a signed delta", () => {
+    expect(adjust({ amount: "5" }).input).toEqual({
+      productId: 7,
+      delta: 5,
+      note: undefined,
+    });
+    expect(
+      adjust({ direction: "out", amount: "2", note: "  Damaged  " }).input,
+    ).toEqual({ productId: 7, delta: -2, note: "Damaged" });
+  });
+
+  it.each(["0", "-1", "1.5", "", String(STOCK_MAX + 1)])(
+    "rejects amount %s",
+    (amount) => expect(adjust({ amount }).errors.amount).toMatch(/1 to/),
+  );
+
+  it("accepts the bounds", () => {
+    expect(adjust({ amount: "1" }).input?.delta).toBe(1);
+    expect(adjust({ amount: String(STOCK_MAX) }).input?.delta).toBe(STOCK_MAX);
+  });
+
+  it("limits the note", () => {
+    expect(adjust({ note: "x".repeat(201) }).errors.note).toMatch(/200/);
+    expect(adjust({ note: "x".repeat(200) }).input).toBeDefined();
+  });
+
+  it("treats a tampered direction or product id as invalid", () => {
+    expect(adjust({ direction: "sideways" }).invalid).toBe(true);
+    expect(adjust({ productId: "0" }).invalid).toBe(true);
   });
 });

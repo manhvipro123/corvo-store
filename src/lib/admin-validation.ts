@@ -307,3 +307,50 @@ export function parseStockForm(
     };
   return { values, errors: {}, input: { productId, expected, quantity } };
 }
+
+export const STOCK_NOTE_MAX_LENGTH = 200;
+
+export type StockAdjustInput = {
+  productId: number;
+  /** Units to add; negative to write some off. Never 0. */
+  delta: number;
+  note?: string;
+};
+
+export type StockAdjustField = "amount" | "note";
+
+/**
+ * An "add or remove N units" form: `direction` is `in` (received) or `out`
+ * (written off), `amount` a whole number of units, `note` optional.
+ */
+export function parseStockAdjustForm(
+  data: Source,
+): Parsed<StockAdjustField, StockAdjustInput> & { invalid?: true } {
+  const raw = read(data, ["productId", "direction", "amount", "note"] as const);
+  const values = { amount: raw.amount, note: raw.note };
+  const productId = parseWholeNumber(raw.productId, 1, 2 ** 31 - 1);
+  // Hidden or fixed-choice fields only change if the request was tampered with.
+  if (
+    productId === undefined ||
+    (raw.direction !== "in" && raw.direction !== "out")
+  )
+    return { values, errors: {}, invalid: true };
+
+  const errors: Partial<Record<StockAdjustField, string>> = {};
+  const amount = parseWholeNumber(raw.amount, 1, STOCK_MAX);
+  if (amount === undefined)
+    errors.amount = `Enter a whole number from 1 to ${STOCK_MAX}.`;
+  if (raw.note.length > STOCK_NOTE_MAX_LENGTH)
+    errors.note = `Use ${STOCK_NOTE_MAX_LENGTH} characters or fewer.`;
+  if (Object.keys(errors).length) return { values, errors };
+
+  return {
+    values,
+    errors,
+    input: {
+      productId,
+      delta: raw.direction === "in" ? amount! : -amount!,
+      note: raw.note || undefined,
+    },
+  };
+}

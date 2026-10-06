@@ -3,6 +3,7 @@ import type Stripe from "stripe";
 import { isEventProcessed } from "@/db/orders";
 import { transitionFor } from "@/lib/checkout";
 import { syncCheckoutSession } from "@/lib/checkout-session";
+import { revalidateStorefront } from "@/lib/storefront-cache";
 import { stripe } from "@/lib/stripe";
 
 const HANDLED = new Set([
@@ -44,11 +45,14 @@ export async function POST(request: Request) {
 
     const session = event.data.object as Stripe.Checkout.Session;
     const transition = transitionFor(event.type, session.payment_status);
-    if (transition)
+    if (transition) {
       await syncCheckoutSession(session, transition, {
         id: event.id,
         type: event.type,
       });
+      // Units came back: cached product pages show them on the next visit.
+      if (transition.release) revalidateStorefront();
+    }
   } catch (error) {
     // 5xx makes Stripe retry later, which is safe for the reasons above.
     console.error("[stripe] webhook failed", event.id, error);

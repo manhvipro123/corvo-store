@@ -7,6 +7,7 @@ import {
   applyTransition,
   attachCheckoutSession,
   getOrderRecord,
+  getStalePendingOrders,
   releaseOrder,
   reserveOrder,
 } from "@/db/orders";
@@ -17,6 +18,7 @@ import {
   type Transition,
   toLineItems,
 } from "@/lib/checkout";
+import { revalidateStorefront } from "@/lib/storefront-cache";
 import { siteURL, stripe } from "@/lib/stripe";
 
 /** httpOnly cookie with the browser's pending order id (one at a time). */
@@ -119,6 +121,43 @@ export async function syncCheckoutSession(
   return (await getOrderRecord(order.id))?.status;
 }
 
+const EXPIRE = { to: "expired", from: ["pending"] } satisfies Pick<
+  Transition,
+  "to" | "from"
+>;
+
+/**
+ * Releases a pending order's stock, but only once Stripe confirms its
+ * session expired (expiring it first if still open). A session completed in
+ * the meantime is left alone: only the webhook marks orders paid. Returns
+ * whether stock was released here.
+ */
+async function expireAndRelease(order: {
+  id: string;
+  stripeCheckoutSessionId: string | null;
+}) {
+  let released;
+  if (!order.stripeCheckoutSessionId) {
+    released = await releaseOrder(order.id, EXPIRE);
+  } else {
+    try {
+      await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    } catch {
+      // Already expired or completed; the retrieve below tells which.
+    }
+    const session = await stripe.checkout.sessions.retrieve(
+      order.stripeCheckoutSessionId,
+    );
+    // The `checkout.session.expired` webhook does the same; releasing is
+    // idempotent, so whichever runs first wins.
+    if (session.status !== "expired") return false;
+    released = await releaseOrder(order.id, EXPIRE);
+  }
+  if (!released.rows.length) return false;
+  revalidateStorefront();
+  return true;
+}
+
 /**
  * Ends this browser's pending checkout, if it belongs to `userId`. Stock is
  * released only once Stripe confirms the session expired; if it was paid in
@@ -132,26 +171,31 @@ export async function cancelPendingCheckout(userId: string) {
 
   const order = await getOrderRecord(orderId);
   if (!order || order.userId !== userId || order.status !== "pending") return;
+  await expireAndRelease(order);
+}
 
-  const expire = { to: "expired", from: ["pending"] } satisfies Pick<
-    Transition,
-    "to" | "from"
-  >;
-  if (!order.stripeCheckoutSessionId) {
-    await releaseOrder(order.id, expire);
-    return;
+/** Grace after `expires_at` for Stripe's own `expired` webhook to arrive. */
+const STALE_GRACE_MINUTES = 5;
+
+/**
+ * Releases the stock of checkouts that ended without their `expired`
+ * webhook (missed delivery, misconfigured endpoint, a session never
+ * attached). Same rule as everywhere: release only once Stripe confirms
+ * the session expired. Run by the cron route and the admin inventory page.
+ */
+export async function releaseStalePendingOrders({ limit = 50 } = {}) {
+  const before = new Date(Date.now() - STALE_GRACE_MINUTES * 60_000);
+  const stale = await getStalePendingOrders(before, limit);
+  let released = 0;
+  for (const order of stale) {
+    try {
+      if (await expireAndRelease(order)) released += 1;
+    } catch (error) {
+      // One bad order (e.g. Stripe unreachable) mustn't stop the rest.
+      console.error("[checkout] stale release failed", order.id, error);
+    }
   }
-  try {
-    await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
-  } catch {
-    // Already expired or completed; the retrieve below tells which.
-  }
-  const session = await stripe.checkout.sessions.retrieve(
-    order.stripeCheckoutSessionId,
-  );
-  // The `checkout.session.expired` webhook does the same; releasing is
-  // idempotent, so whichever runs first wins.
-  if (session.status === "expired") await releaseOrder(order.id, expire);
+  return { released, skipped: stale.length - released };
 }
 
 /**
