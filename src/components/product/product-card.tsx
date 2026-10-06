@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { ProductImage } from "@/components/product/product-image";
 import { MediaFrame } from "@/components/ui/media-frame";
-import { getStockStatus } from "@/lib/catalog";
+import { getStockStatus, stockLabel } from "@/lib/catalog";
 import { formatPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Product } from "@/types/catalog";
@@ -20,7 +20,8 @@ export function ProductCard({
   /** Hide when the surrounding list is already scoped to one category. */
   showCategory?: boolean;
 }) {
-  const soldOut = getStockStatus(product.stock) === "sold-out";
+  const status = getStockStatus(product.stock);
+  const soldOut = status === "sold-out";
 
   return (
     <Link href={`/products/${product.slug}`} className="group block">
@@ -43,11 +44,16 @@ export function ProductCard({
         <h3 className="text-meta line-clamp-2 underline-offset-2 group-hover:underline">
           {product.name}
         </h3>
-        <p className="text-meta mt-1 flex gap-3">
+        <p className="text-meta mt-1 flex flex-wrap gap-x-3 gap-y-1">
           <span className={cn("font-medium", soldOut && "text-muted")}>
             {formatPrice(product.priceCents)}
           </span>
-          {soldOut && <span className="text-muted">Sold out</span>}
+          {/* Only the exceptions are called out; "In stock" would be noise. */}
+          {status !== "in-stock" && (
+            <span className={cn(soldOut && "text-muted")}>
+              {stockLabel(product.stock)}
+            </span>
+          )}
         </p>
       </div>
     </Link>
