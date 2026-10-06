@@ -21,9 +21,14 @@ const HANDLED = new Set([
  */
 export async function POST(request: Request) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) {
+    // Our misconfiguration, not a bad request: 5xx keeps Stripe retrying
+    // until the secret is set, and the log says why.
+    console.error("[stripe] STRIPE_WEBHOOK_SECRET is not set");
+    return new Response("Webhook not configured", { status: 500 });
+  }
   const signature = request.headers.get("stripe-signature");
-  if (!secret || !signature)
-    return new Response("Bad request", { status: 400 });
+  if (!signature) return new Response("Bad request", { status: 400 });
 
   let event: Stripe.Event;
   try {

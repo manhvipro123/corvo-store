@@ -115,12 +115,19 @@ export async function releaseExpiredHolds(): Promise<ReleaseHoldsState> {
   await requireAdmin("/admin/inventory");
 
   try {
-    const { released, skipped } = await releaseStalePendingOrders();
+    const { released, skipped, needsReconcile } =
+      await releaseStalePendingOrders();
     refresh();
-    if (!released && !skipped)
+    if (!released && !skipped && !needsReconcile)
       return { message: "No expired checkouts to release." };
+    const notes = [
+      skipped &&
+        `${skipped} could not be released yet (Stripe hasn't confirmed they ended)`,
+      needsReconcile &&
+        `${needsReconcile} were completed at Stripe and need their webhook resent`,
+    ].filter(Boolean);
     return {
-      message: `Released ${released} expired ${released === 1 ? "checkout" : "checkouts"}${skipped ? `; ${skipped} could not be released yet (Stripe hasn't confirmed they ended)` : ""}.`,
+      message: `Released ${released} expired ${released === 1 ? "checkout" : "checkouts"}${notes.length ? `; ${notes.join("; ")}` : ""}.`,
     };
   } catch (error) {
     console.error("[admin] releasing expired holds failed", error);

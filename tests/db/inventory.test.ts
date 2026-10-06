@@ -2,7 +2,7 @@ import { neon } from "@neondatabase/serverless";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { STOCK_MAX } from "@/lib/admin-validation";
-import type { ReservedLine } from "@/lib/checkout";
+import { type ReservedLine, staleCutoff } from "@/lib/checkout";
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -259,6 +259,38 @@ describe.skipIf(!url)("inventory writes and history (test database)", () => {
       staleHolds: 1,
       processing: 1,
     });
+    await expectLedgerMatches(id);
+  });
+
+  it("leaves checkouts in the grace period and flagged ones out of the sweep", async () => {
+    const id = await product(6);
+    const [recent, old, flagged] = await Promise.all(
+      [1, 1, 1].map(async (n) =>
+        orders.reserveOrder({ userId, lines: [await line(id, n)] }),
+      ),
+    );
+    await sql`update orders set expires_at = now() - interval '1 minute' where id = ${recent.id}`;
+    await sql`update orders set expires_at = now() - interval '1 hour' where id in (${old.id}, ${flagged.id})`;
+
+    await orders.markReconcileNeeded(flagged.id);
+    const ids = (await orders.getStalePendingOrders(staleCutoff(), 500)).map(
+      (o) => o.id,
+    );
+    expect(ids).toContain(old.id);
+    expect(ids).not.toContain(recent.id);
+    expect(ids).not.toContain(flagged.id);
+
+    // Flagging changes no stock, and only pending orders can be flagged.
+    expect(await q.getInventoryItem(id)).toMatchObject({
+      available: 3,
+      staleHolds: 3,
+    });
+    await orders.releaseOrder(old.id, { to: "expired", from: ["pending"] });
+    await orders.markReconcileNeeded(old.id);
+    const [row] =
+      await sql`select reconcile_needed_at from orders where id = ${old.id}`;
+    expect(row.reconcile_needed_at).toBeNull();
+    expect((await q.getInventoryCounts()).needsReconcile).toBeGreaterThan(0);
     await expectLedgerMatches(id);
   });
 

@@ -17,7 +17,21 @@ export const BAG_COUNT_COOKIE = "corvo_bag_count";
 /** Keeps the cookie well under the ~4 KB browser limit. */
 export const MAX_BAG_LINES = 50;
 
-const isPositiveInt = (n: number) => Number.isSafeInteger(n) && n > 0;
+/**
+ * Most of one product a bag (and so one checkout) can hold, so a single
+ * checkout can't reserve a product's whole stock.
+ */
+export const MAX_LINE_QUANTITY = 10;
+
+/** How many of a product one line may hold: live stock, capped per line. */
+export const lineLimit = (stock: number) =>
+  Math.min(Math.max(0, stock), MAX_LINE_QUANTITY);
+
+/** Postgres `integer` max: larger ids would make the DB query throw. */
+const INT4_MAX = 2_147_483_647;
+
+const isPositiveInt = (n: number) =>
+  Number.isSafeInteger(n) && n > 0 && n <= INT4_MAX;
 
 /**
  * Parses the cookie value ("12:1.40:2"). Malformed entries are dropped, a
@@ -48,6 +62,20 @@ export function serializeBag(items: BagItem[]): string {
     .join(".");
 }
 
+/**
+ * The bag without what a paid order already bought: each ordered quantity
+ * is taken off its line, so pieces added since checkout started stay.
+ */
+export function withoutOrdered(items: BagItem[], ordered: BagItem[]) {
+  const bought = new Map(ordered.map((o) => [o.productId, o.quantity]));
+  return items
+    .map((i) => ({
+      ...i,
+      quantity: i.quantity - (bought.get(i.productId) ?? 0),
+    }))
+    .filter((i) => i.quantity > 0);
+}
+
 /** Reads a positive integer form field (product id, quantity), else null. */
 export function readPositiveInt(value: FormDataEntryValue | null) {
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
@@ -75,7 +103,8 @@ export type Bag = {
 
 /**
  * Joins stored items with live products: drops removed products, keeps
- * sold-out ones (shown, not charged) and lowers quantities above stock.
+ * sold-out ones (shown, not charged) and lowers quantities above stock or
+ * `MAX_LINE_QUANTITY`.
  */
 export function buildBag(items: BagItem[], products: Product[]): Bag {
   const byId = new Map(products.map((p) => [p.id, p]));
@@ -91,11 +120,13 @@ export function buildBag(items: BagItem[], products: Product[]): Bag {
       );
       continue;
     }
-    const stock = Math.max(0, product.stock);
-    const quantity = Math.min(item.quantity, stock);
-    if (stock > 0 && quantity < item.quantity)
+    const limit = lineLimit(product.stock);
+    const quantity = Math.min(item.quantity, limit);
+    if (limit > 0 && quantity < item.quantity)
       adjustments.push(
-        `Only ${stock} of ${product.name} left; we've updated your bag.`,
+        product.stock > MAX_LINE_QUANTITY
+          ? `You can buy up to ${limit} of ${product.name} at a time; we've updated your bag.`
+          : `Only ${limit} of ${product.name} left; we've updated your bag.`,
       );
     lines.push({
       product,
@@ -106,7 +137,7 @@ export function buildBag(items: BagItem[], products: Product[]): Bag {
     // back if restocked; they're never charged meanwhile.
     kept.push({
       productId: item.productId,
-      quantity: quantity || item.quantity,
+      quantity: quantity || Math.min(item.quantity, MAX_LINE_QUANTITY),
     });
   }
 

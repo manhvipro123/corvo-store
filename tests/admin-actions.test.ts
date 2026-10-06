@@ -51,7 +51,11 @@ vi.mock("@/db/orders", () => ({
   attachCheckoutSession: vi.fn(),
 }));
 vi.mock("@/lib/checkout-session", () => ({
-  releaseStalePendingOrders: vi.fn(async () => ({ released: 0, skipped: 0 })),
+  releaseStalePendingOrders: vi.fn(async () => ({
+    released: 0,
+    needsReconcile: 0,
+    skipped: 0,
+  })),
   cancelPendingCheckout: vi.fn(),
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), refresh: vi.fn() }));

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -12,6 +12,7 @@ import {
   stripeEvents,
 } from "@/db/schema";
 import {
+  RESERVATION_HEADROOM_MS,
   RESERVATION_MINUTES,
   type ReservedLine,
   type Transition,
@@ -45,7 +46,9 @@ export async function reserveOrder({
   lines: ReservedLine[];
 }) {
   const id = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + RESERVATION_MINUTES * 60_000);
+  const expiresAt = new Date(
+    Date.now() + RESERVATION_MINUTES * 60_000 + RESERVATION_HEADROOM_MS,
+  );
   const sorted = [...lines].sort((a, b) => a.productId - b.productId);
   const subtotalCents = sorted.reduce(
     (sum, l) => sum + l.unitPriceCents * l.quantity,
@@ -97,14 +100,20 @@ export async function reserveOrder({
   return { id, expiresAt, subtotalCents };
 }
 
+/**
+ * Attaches the session only while the order is still pending; false if it
+ * was ended meanwhile, so its session must not be used.
+ */
 export async function attachCheckoutSession(
   orderId: string,
   sessionId: string,
 ) {
-  await db
+  const rows = await db
     .update(orders)
     .set({ stripeCheckoutSessionId: sessionId })
-    .where(eq(orders.id, orderId));
+    .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
+    .returning({ id: orders.id });
+  return rows.length > 0;
 }
 
 /**
@@ -143,7 +152,8 @@ export function releaseOrder(
 /**
  * Pending orders whose reservation ended before `before` (oldest first):
  * checkouts whose `expired` webhook never arrived, or that never got a
- * Stripe session. Uses `orders_status_expires_at_idx`.
+ * Stripe session. Orders already flagged by `markReconcileNeeded` are left
+ * out, so they can't fill every batch. Uses `orders_status_expires_at_idx`.
  */
 export async function getStalePendingOrders(before: Date, limit: number) {
   return db
@@ -152,9 +162,57 @@ export async function getStalePendingOrders(before: Date, limit: number) {
       stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
     })
     .from(orders)
-    .where(and(eq(orders.status, "pending"), lt(orders.expiresAt, before)))
+    .where(
+      and(
+        eq(orders.status, "pending"),
+        lt(orders.expiresAt, before),
+        isNull(orders.reconcileNeededAt),
+      ),
+    )
     .orderBy(asc(orders.expiresAt))
     .limit(limit);
+}
+
+/**
+ * The user's pending orders that have a Stripe session. Orders flagged by
+ * `markReconcileNeeded` were paid at Stripe, so they're left out; so are
+ * orders still waiting for their session, which another request is creating
+ * right now (`createCheckout` releases them if that fails, the sweep if it
+ * never finishes). Uses `orders_user_id_idx`.
+ */
+export async function getPendingOrdersForUser(userId: string) {
+  return db
+    .select({
+      id: orders.id,
+      stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.userId, userId),
+        eq(orders.status, "pending"),
+        isNotNull(orders.stripeCheckoutSessionId),
+        isNull(orders.reconcileNeededAt),
+      ),
+    );
+}
+
+/**
+ * Flags a pending order whose Stripe session completed without its webhook
+ * reaching us. Only a resent webhook may settle it (paid, or released if the
+ * payment failed); the flag just takes it out of the sweep.
+ */
+export function markReconcileNeeded(orderId: string) {
+  return db
+    .update(orders)
+    .set({ reconcileNeededAt: new Date() })
+    .where(
+      and(
+        eq(orders.id, orderId),
+        eq(orders.status, "pending"),
+        isNull(orders.reconcileNeededAt),
+      ),
+    );
 }
 
 export type PaymentDetails = {
@@ -214,6 +272,14 @@ export async function isEventProcessed(eventId: string) {
     .where(eq(stripeEvents.id, eventId))
     .limit(1);
   return Boolean(row);
+}
+
+/** What an order bought, as bag items (product id and quantity). */
+export async function getOrderLines(orderId: string) {
+  return db
+    .select({ productId: orderItems.productId, quantity: orderItems.quantity })
+    .from(orderItems)
+    .where(eq(orderItems.orderId, orderId));
 }
 
 /** The order with its own status and owner, for server-side checks only. */

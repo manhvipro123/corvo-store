@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const releaseStalePendingOrders = vi.fn(async () => ({
   released: 2,
+  needsReconcile: 1,
   skipped: 1,
 }));
 vi.mock("@/lib/checkout-session", () => ({ releaseStalePendingOrders }));
@@ -41,7 +42,11 @@ describe("cron: release expired checkouts", () => {
   it("runs the sweep with the right secret", async () => {
     const response = await call("Bearer s3cret-value");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ released: 2, skipped: 1 });
+    expect(await response.json()).toEqual({
+      released: 2,
+      needsReconcile: 1,
+      skipped: 1,
+    });
     expect(releaseStalePendingOrders).toHaveBeenCalledOnce();
   });
 });

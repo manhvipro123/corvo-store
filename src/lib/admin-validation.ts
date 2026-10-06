@@ -5,6 +5,7 @@
  * `errors`, and the typed `input` only when there are no errors.
  */
 
+import { STRIPE_MAX_TOTAL_CENTS } from "@/lib/checkout";
 import { colors } from "@/lib/colors";
 import type { ColorSlug } from "@/types/catalog";
 
@@ -19,8 +20,8 @@ type Parsed<F extends string, T> = {
 export const TEXT_MAX_LENGTH = 200;
 export const LONG_TEXT_MAX_LENGTH = 4000;
 export const STOCK_MAX = 100_000;
-/** $1,000,000.00, well inside a Postgres integer. */
-const PRICE_MAX_CENTS = 100_000_000;
+/** $999,999.99: Stripe's largest USD charge, well inside a Postgres integer. */
+const PRICE_MAX_CENTS = STRIPE_MAX_TOTAL_CENTS;
 const POSITION_MAX = 1_000_000;
 /** Must match `images.remotePatterns` in next.config.ts. */
 export const IMAGE_HOST = "images.unsplash.com";
@@ -165,7 +166,10 @@ export function parseProductForm(
   if (!color) set("color", "Choose a colour.");
   const priceCents = parsePriceCents(values.price);
   if (priceCents === undefined)
-    set("price", "Enter a price in dollars, like 1250 or 1250.50.");
+    set(
+      "price",
+      "Enter a price in dollars up to 999999.99, like 1250 or 1250.50.",
+    );
   set(
     "description",
     requiredText(values.description, "a description", LONG_TEXT_MAX_LENGTH),

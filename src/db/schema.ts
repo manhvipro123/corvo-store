@@ -80,7 +80,7 @@ export const products = pgTable(
   ],
 );
 
-/** One row per product; a missing row is treated as sold out. */
+/** One row per product (`createProduct` and migration 0004 guarantee it). */
 export const productStock = pgTable(
   "product_stock",
   {
@@ -131,6 +131,12 @@ export const orders = pgTable(
     /** When the reservation (and the Checkout Session) lapses. */
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    /**
+     * Set by the stale-checkout sweep when Stripe reports the session
+     * complete but no webhook has moved the order: it still holds stock and
+     * the sweep skips it from then on. Settled by resending the event.
+     */
+    reconcileNeededAt: timestamp("reconcile_needed_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [

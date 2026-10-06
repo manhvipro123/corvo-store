@@ -1,7 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { ReservedLine } from "@/lib/checkout";
+import type { ReservedLine, Transition } from "@/lib/checkout";
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -56,7 +56,13 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
   it("creates a pending order with price snapshots and reserves stock", async () => {
     const bag = await product("top-handle-bag-cognac", 5);
     const lines: ReservedLine[] = [{ ...bag, quantity: 2 }];
+    const before = Date.now();
     const order = await orders.reserveOrder({ userId, lines });
+
+    // Still at least Stripe's 30-minute minimum when the session is created.
+    expect(order.expiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + 30 * 60_000 + 30_000,
+    );
 
     expect(order.subtotalCents).toBe(bag.unitPriceCents * 2);
     expect(await stockOf(bag.productId)).toBe(3);
@@ -64,6 +70,9 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
     const [item] =
       await sql`select unit_price_cents, quantity from order_items where order_id = ${order.id}`;
     expect(item).toEqual({ unit_price_cents: bag.unitPriceCents, quantity: 2 });
+    expect(await orders.getOrderLines(order.id)).toEqual([
+      { productId: bag.productId, quantity: 2 },
+    ]);
   });
 
   it("lets only one of two simultaneous checkouts take the last piece", async () => {
@@ -172,6 +181,96 @@ describe.skipIf(!url)("orders and stock reservation (test database)", () => {
     const events =
       await sql`select count(*)::int as n from stripe_events where id = ${event.id}`;
     expect(events[0].n).toBe(1);
+  });
+
+  it("settles an async payment whose result arrives before `completed`", async () => {
+    const pump = await product("slingback-pump-noir", 4);
+    const [succeeded, failed] = await Promise.all(
+      [1, 2].map(() =>
+        orders.reserveOrder({ userId, lines: [{ ...pump, quantity: 1 }] }),
+      ),
+    );
+    expect(await stockOf(pump.productId)).toBe(2);
+    const late = {
+      to: "processing",
+      from: ["pending"],
+      release: false,
+    } satisfies Transition;
+
+    await orders.applyTransition(
+      succeeded.id,
+      { to: "paid", from: ["pending", "processing"], release: false },
+      paid,
+      {
+        id: `evt_ok_${succeeded.id}`,
+        type: "checkout.session.async_payment_succeeded",
+      },
+    );
+    await orders.applyTransition(
+      failed.id,
+      { to: "failed", from: ["pending", "processing"], release: true },
+      paid,
+      {
+        id: `evt_fail_${failed.id}`,
+        type: "checkout.session.async_payment_failed",
+      },
+    );
+    // The late `completed` (unpaid) must not reopen either order.
+    for (const id of [succeeded.id, failed.id])
+      await orders.applyTransition(id, late, paid, {
+        id: `evt_done_${id}`,
+        type: "checkout.session.completed",
+      });
+
+    expect(await statusOf(succeeded.id)).toBe("paid");
+    expect(await statusOf(failed.id)).toBe("failed");
+    expect(await stockOf(pump.productId)).toBe(3);
+  });
+
+  it("lists only the user's own pending orders with a session, without reconcile-flagged ones", async () => {
+    const other = `orders-test-${crypto.randomUUID().slice(0, 8)}`;
+    await sql`insert into users (id, name, email, created_at, updated_at)
+              values (${other}, 'Other', ${`${other}@example.test`}, now(), now())`;
+    try {
+      const pump = await product("slingback-pump-noir", 4);
+      const line = { ...pump, quantity: 1 };
+      const mine = await orders.reserveOrder({ userId: other, lines: [line] });
+      expect(
+        await orders.attachCheckoutSession(mine.id, `cs_test_${mine.id}`),
+      ).toBe(true);
+      // Still being created by another request: never cancelled from here.
+      await orders.reserveOrder({ userId: other, lines: [line] });
+      const flagged = await orders.reserveOrder({
+        userId: other,
+        lines: [line],
+      });
+      await orders.attachCheckoutSession(flagged.id, `cs_test_${flagged.id}`);
+      await orders.markReconcileNeeded(flagged.id);
+      await orders.reserveOrder({ userId, lines: [line] });
+
+      expect(await orders.getPendingOrdersForUser(other)).toEqual([
+        { id: mine.id, stripeCheckoutSessionId: `cs_test_${mine.id}` },
+      ]);
+    } finally {
+      await sql`delete from orders where user_id = ${other}`;
+      await sql`delete from users where id = ${other}`;
+    }
+  });
+
+  it("won't attach a session to an order that ended meanwhile", async () => {
+    const pump = await product("slingback-pump-noir", 4);
+    const order = await orders.reserveOrder({
+      userId,
+      lines: [{ ...pump, quantity: 1 }],
+    });
+    await orders.releaseOrder(order.id, { to: "expired", from: ["pending"] });
+
+    expect(
+      await orders.attachCheckoutSession(order.id, `cs_test_${order.id}`),
+    ).toBe(false);
+    const [row] =
+      await sql`select stripe_checkout_session_id from orders where id = ${order.id}`;
+    expect(row.stripe_checkout_session_id).toBeNull();
   });
 
   it("lists only the user's own placed orders, newest first", async () => {

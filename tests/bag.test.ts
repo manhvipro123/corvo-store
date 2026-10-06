@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_BAG_LINES,
+  MAX_LINE_QUANTITY,
   buildBag,
   parseBag,
   readPositiveInt,
   serializeBag,
+  withoutOrdered,
 } from "@/lib/bag";
 import type { Product } from "@/types/catalog";
 
@@ -34,6 +36,12 @@ describe("parseBag / serializeBag", () => {
     expect(parseBag("12:1.40:2")).toEqual(items);
   });
 
+  it("drops ids beyond a Postgres integer", () => {
+    expect(parseBag("2147483648:1.7:2")).toEqual([
+      { productId: 7, quantity: 2 },
+    ]);
+  });
+
   it("drops malformed, zero, negative and duplicate entries", () => {
     expect(parseBag("12:1.x:2.3:0.-4:1.5:1.5.12:9.7:2.5e3:1")).toEqual([
       { productId: 12, quantity: 1 },
@@ -58,6 +66,8 @@ describe("readPositiveInt", () => {
     ["1.5", null],
     ["", null],
     ["9".repeat(20), null],
+    ["2147483647", 2147483647],
+    ["2147483648", null],
     [null, null],
   ])("%s → %s", (input, expected) =>
     expect(readPositiveInt(input)).toBe(expected),
@@ -87,6 +97,16 @@ describe("buildBag", () => {
     expect(bag.adjustments[0]).toMatch(/Only 2 of Piece 1 left/);
   });
 
+  it(`caps a line at ${MAX_LINE_QUANTITY}, however much is in stock`, () => {
+    const bag = buildBag(
+      [{ productId: 1, quantity: 500 }],
+      [product(1, 100, 1000)],
+    );
+    expect(bag.lines[0].quantity).toBe(MAX_LINE_QUANTITY);
+    expect(bag.items).toEqual([{ productId: 1, quantity: MAX_LINE_QUANTITY }]);
+    expect(bag.adjustments[0]).toMatch(/up to 10 of Piece 1/);
+  });
+
   it("keeps sold-out lines without charging them", () => {
     const bag = buildBag(
       [
@@ -106,5 +126,27 @@ describe("buildBag", () => {
     expect(bag.lines).toEqual([]);
     expect(bag.items).toEqual([]);
     expect(bag.adjustments[0]).toMatch(/no longer available/);
+  });
+});
+
+describe("withoutOrdered", () => {
+  it("takes off what the order bought and keeps pieces added since", () => {
+    expect(
+      withoutOrdered(
+        [
+          { productId: 1, quantity: 3 },
+          { productId: 2, quantity: 1 },
+          { productId: 3, quantity: 2 },
+        ],
+        [
+          { productId: 1, quantity: 1 },
+          { productId: 2, quantity: 1 },
+          { productId: 9, quantity: 4 },
+        ],
+      ),
+    ).toEqual([
+      { productId: 1, quantity: 2 },
+      { productId: 3, quantity: 2 },
+    ]);
   });
 });

@@ -50,6 +50,20 @@ export default async function AdminPage() {
           </Link>
         </p>
       )}
+      {counts.needsReconcile > 0 && (
+        <p className="text-meta mt-6">
+          {counts.needsReconcile}{" "}
+          {counts.needsReconcile === 1 ? "checkout was" : "checkouts were"}{" "}
+          completed at Stripe without a webhook and still{" "}
+          {counts.needsReconcile === 1 ? "holds" : "hold"} stock.{" "}
+          <Link
+            href="/admin/inventory"
+            className="underline underline-offset-2 hover:opacity-70"
+          >
+            See Inventory
+          </Link>
+        </p>
+      )}
     </section>
   );
 }

@@ -36,6 +36,13 @@
       "when": 1791278708536,
       "tag": "0004_backfill_stock",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791286106991,
+      "tag": "0005_orders_reconcile_needed",
+      "breakpoints": true
     }
   ]
 }

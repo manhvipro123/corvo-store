@@ -4,14 +4,24 @@ import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { OutOfStockError } from "@/db/orders";
-import { MAX_BAG_LINES, readPositiveInt } from "@/lib/bag";
+import {
+  MAX_BAG_LINES,
+  MAX_LINE_QUANTITY,
+  lineLimit,
+  readPositiveInt,
+} from "@/lib/bag";
 import { loadBag, writeBag } from "@/lib/bag-cookie";
-import { cancelPendingCheckout, createCheckout } from "@/lib/checkout-session";
+import { totalProblem } from "@/lib/checkout";
+import {
+  cancelPendingCheckout,
+  clearConfirmedCheckout,
+  createCheckout,
+} from "@/lib/checkout-session";
 import { requireUser } from "@/lib/session";
 
 export type AddToBagState = { added?: boolean; message?: string };
 
-/** Adds one of a product, never beyond its live stock. */
+/** Adds one of a product, never beyond its live stock or the line cap. */
 export async function addToBag(
   _prev: AddToBagState,
   data: FormData,
@@ -24,15 +34,18 @@ export async function addToBag(
   if (!product) return { message: "This piece is no longer available." };
   if (product.stock <= 0) return { message: "This piece has just sold out." };
 
+  const limit = lineLimit(product.stock);
   const current = bag.items.find((i) => i.productId === productId);
-  const inBag = Math.min(current?.quantity ?? 0, product.stock);
-  if (inBag + 1 > product.stock) {
+  const inBag = Math.min(current?.quantity ?? 0, limit);
+  if (inBag + 1 > limit) {
     await writeBag(bag.items, products);
     return {
       message:
-        product.stock === 1
-          ? "The last one is already in your bag."
-          : `You already have all ${product.stock} available in your bag.`,
+        product.stock > MAX_LINE_QUANTITY
+          ? `You can buy up to ${limit} of this piece at a time.`
+          : limit === 1
+            ? "The last one is already in your bag."
+            : `You already have all ${limit} available in your bag.`,
     };
   }
   if (!current && bag.items.length >= MAX_BAG_LINES)
@@ -49,7 +62,7 @@ export async function addToBag(
   return { added: true };
 }
 
-/** Sets a line's quantity, limited to live stock; 0 removes the line. */
+/** Sets a line's quantity, limited to live stock and the line cap; 0 removes the line. */
 export async function updateQuantity(data: FormData) {
   const productId = readPositiveInt(data.get("productId"));
   const quantity =
@@ -60,7 +73,7 @@ export async function updateQuantity(data: FormData) {
   const line = bag.lines.find((l) => l.product.id === productId);
   if (!line) return;
 
-  const next = Math.min(quantity, line.product.stock);
+  const next = Math.min(quantity, lineLimit(line.product.stock));
   await writeBag(
     next > 0
       ? bag.items.map((i) =>
@@ -92,8 +105,30 @@ export type CheckoutState = { message?: string };
 export async function startCheckout(): Promise<CheckoutState> {
   const { user } = await requireUser("/bag");
 
-  // One pending checkout per browser: end the previous one first.
-  await cancelPendingCheckout(user.id);
+  // The last checkout was paid but its success page never ran: don't
+  // charge the same pieces twice.
+  if (await clearConfirmedCheckout(user.id)) {
+    refresh();
+    return {
+      message:
+        "Your last order went through, so its pieces are out of your bag. Please review it.",
+    };
+  }
+
+  // One pending checkout per user: end any earlier one first.
+  let awaitingConfirmation: boolean;
+  try {
+    awaitingConfirmation = await cancelPendingCheckout(user.id);
+  } catch (error) {
+    console.error("[checkout] could not end the previous checkout", error);
+    return { message: "We couldn't start checkout. Please try again." };
+  }
+  // Paid at Stripe, webhook not here yet: don't charge the bag twice.
+  if (awaitingConfirmation)
+    return {
+      message:
+        "Your last payment is still being confirmed. Please check your orders before checking out again.",
+    };
 
   const { bag, products } = await loadBag();
   if (bag.adjustments.length) {
@@ -106,6 +141,8 @@ export async function startCheckout(): Promise<CheckoutState> {
   if (bag.lines.some((line) => line.quantity === 0))
     return { message: "Remove sold-out pieces before checking out." };
   if (!bag.lines.length) return { message: "Your bag is empty." };
+  const problem = totalProblem(bag.subtotalCents);
+  if (problem) return { message: problem };
 
   let url: string;
   try {

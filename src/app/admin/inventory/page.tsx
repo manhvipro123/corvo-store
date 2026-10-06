@@ -64,7 +64,10 @@ export default async function InventoryPage({
       />
 
       <InventoryStatusProvider>
-        <ReleaseHoldsForm staleCheckouts={counts.staleHolds} />
+        <ReleaseHoldsForm
+          staleCheckouts={counts.staleHolds}
+          needsReconcile={counts.needsReconcile}
+        />
 
         <form
           action="/admin/inventory"

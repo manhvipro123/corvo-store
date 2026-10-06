@@ -6,15 +6,19 @@ import type Stripe from "stripe";
 import {
   applyTransition,
   attachCheckoutSession,
+  getOrderLines,
   getOrderRecord,
+  getPendingOrdersForUser,
   getStalePendingOrders,
+  markReconcileNeeded,
   releaseOrder,
   reserveOrder,
 } from "@/db/orders";
-import { clearBag } from "@/lib/bag-cookie";
+import { removeOrderedFromBag } from "@/lib/bag-cookie";
 import {
   amountMatches,
   type ReservedLine,
+  staleCutoff,
   type Transition,
   toLineItems,
 } from "@/lib/checkout";
@@ -63,15 +67,25 @@ export async function createCheckout(
     throw error;
   }
 
-  await attachCheckoutSession(order.id, session.id);
-  (await cookies()).set(CHECKOUT_COOKIE, order.id, {
+  if (!(await attachCheckoutSession(order.id, session.id))) {
+    // Ended (and its stock released) while Stripe created the session:
+    // never send the customer to pay for it.
+    await stripe.checkout.sessions.expire(session.id).catch(() => {});
+    throw new Error(`Order ${order.id} ended before its session was attached`);
+  }
+  await rememberCheckout(order.id);
+  return session.url!;
+}
+
+/** Remembers the browser's checkout, so a paid one leaves the bag. */
+async function rememberCheckout(orderId: string) {
+  (await cookies()).set(CHECKOUT_COOKIE, orderId, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 24, // longer than any session can live
   });
-  return session.url!;
 }
 
 /**
@@ -91,12 +105,9 @@ export async function syncCheckoutSession(
     return undefined;
   }
 
-  if (
-    !transition.release &&
-    session.payment_status !== "unpaid" &&
-    !amountMatches(session, order.subtotalCents)
-  ) {
-    // Never happens unless something upstream is wrong; don't mark it paid.
+  if (!transition.release && !amountMatches(session, order.subtotalCents)) {
+    // Never happens unless something upstream is wrong; don't mark it paid
+    // or processing (an async payment would charge `amount_total` too).
     console.error("[checkout] amount mismatch", order.id, session.amount_total);
     return order.status;
   }
@@ -126,16 +137,25 @@ const EXPIRE = { to: "expired", from: ["pending"] } satisfies Pick<
   "to" | "from"
 >;
 
+/** Stripe's "No such checkout.session": unknown to the account we use. */
+function isMissingSession(error: unknown) {
+  return (error as { code?: string } | null)?.code === "resource_missing";
+}
+
 /**
  * Releases a pending order's stock, but only once Stripe confirms its
- * session expired (expiring it first if still open). A session completed in
- * the meantime is left alone: only the webhook marks orders paid. Returns
- * whether stock was released here.
+ * session expired (expiring it first if still open), or that our account
+ * has no such session (e.g. a test-mode session after switching to live
+ * keys): neither can ever be paid here. A session completed in the meantime
+ * is left alone: only the webhook marks orders paid. Returns what happened:
+ * `released` here, `completed` at Stripe (waiting for its webhook), or
+ * `skipped` (still open, or released elsewhere first). Other Stripe errors
+ * throw, so the order is retried later.
  */
 async function expireAndRelease(order: {
   id: string;
   stripeCheckoutSessionId: string | null;
-}) {
+}): Promise<"released" | "completed" | "skipped"> {
   let released;
   if (!order.stripeCheckoutSessionId) {
     released = await releaseOrder(order.id, EXPIRE);
@@ -145,62 +165,94 @@ async function expireAndRelease(order: {
     } catch {
       // Already expired or completed; the retrieve below tells which.
     }
-    const session = await stripe.checkout.sessions.retrieve(
-      order.stripeCheckoutSessionId,
-    );
+    let session: Stripe.Checkout.Session | undefined;
+    try {
+      session = await stripe.checkout.sessions.retrieve(
+        order.stripeCheckoutSessionId,
+      );
+    } catch (error) {
+      if (!isMissingSession(error)) throw error;
+      console.error(
+        "[checkout] releasing an order whose session Stripe doesn't know",
+        order.id,
+        order.stripeCheckoutSessionId,
+      );
+    }
+    if (session?.status === "complete") return "completed";
     // The `checkout.session.expired` webhook does the same; releasing is
     // idempotent, so whichever runs first wins.
-    if (session.status !== "expired") return false;
+    if (session && session.status !== "expired") return "skipped";
     released = await releaseOrder(order.id, EXPIRE);
   }
-  if (!released.rows.length) return false;
+  if (!released.rows.length) return "skipped";
   revalidateStorefront();
-  return true;
+  return "released";
 }
 
 /**
- * Ends this browser's pending checkout, if it belongs to `userId`. Stock is
- * released only once Stripe confirms the session expired; if it was paid in
- * the meantime nothing changes here and the webhook marks it paid.
+ * Ends every pending checkout of `userId`, found in the DB rather than via
+ * this browser's cookie, so dropping the cookie or switching browsers can't
+ * stack up held stock. Stock is released only once Stripe confirms the
+ * session expired. A session paid in the meantime is left for the webhook
+ * and remembered in this browser, so its pieces leave the bag once it's
+ * confirmed; returns true then, and the caller must not start another
+ * checkout for the same bag.
  */
 export async function cancelPendingCheckout(userId: string) {
-  const store = await cookies();
-  const orderId = store.get(CHECKOUT_COOKIE)?.value;
-  if (!orderId) return;
-  store.delete(CHECKOUT_COOKIE);
-
-  const order = await getOrderRecord(orderId);
-  if (!order || order.userId !== userId || order.status !== "pending") return;
-  await expireAndRelease(order);
+  (await cookies()).delete(CHECKOUT_COOKIE);
+  let awaitingConfirmation = false;
+  for (const order of await getPendingOrdersForUser(userId)) {
+    if ((await expireAndRelease(order)) !== "completed") continue;
+    awaitingConfirmation = true;
+    await rememberCheckout(order.id);
+  }
+  return awaitingConfirmation;
 }
-
-/** Grace after `expires_at` for Stripe's own `expired` webhook to arrive. */
-const STALE_GRACE_MINUTES = 5;
 
 /**
  * Releases the stock of checkouts that ended without their `expired`
  * webhook (missed delivery, misconfigured endpoint, a session never
  * attached). Same rule as everywhere: release only once Stripe confirms
- * the session expired. Run by the cron route and the admin inventory page.
+ * the session expired. A session Stripe reports complete lost its
+ * `completed` webhook instead: it's flagged for the admin (resend the
+ * event) and skipped by later runs, so it can't block the queue. Run by
+ * the cron route and the admin inventory page.
  */
 export async function releaseStalePendingOrders({ limit = 50 } = {}) {
-  const before = new Date(Date.now() - STALE_GRACE_MINUTES * 60_000);
-  const stale = await getStalePendingOrders(before, limit);
+  const stale = await getStalePendingOrders(staleCutoff(), limit);
   let released = 0;
+  let needsReconcile = 0;
   for (const order of stale) {
     try {
-      if (await expireAndRelease(order)) released += 1;
+      const outcome = await expireAndRelease(order);
+      if (outcome === "released") released += 1;
+      if (outcome === "completed") {
+        console.error(
+          "[checkout] session completed without its webhook",
+          order.id,
+          order.stripeCheckoutSessionId,
+        );
+        await markReconcileNeeded(order.id);
+        needsReconcile += 1;
+      }
     } catch (error) {
       // One bad order (e.g. Stripe unreachable) mustn't stop the rest.
       console.error("[checkout] stale release failed", order.id, error);
     }
   }
-  return { released, skipped: stale.length - released };
+  return {
+    released,
+    needsReconcile,
+    skipped: stale.length - released - needsReconcile,
+  };
 }
 
 /**
  * Once the webhook has confirmed this browser's checkout (paid, or a delayed
- * payment processing), empty the bag and forget the order. Reads only our DB.
+ * payment processing), take its pieces out of the bag and forget the order.
+ * Run by the success page, and again when the next checkout starts in case
+ * the customer never came back to it. Reads only our DB. Returns whether
+ * the bag changed.
  */
 export async function clearConfirmedCheckout(userId: string) {
   const store = await cookies();
@@ -214,6 +266,5 @@ export async function clearConfirmedCheckout(userId: string) {
   )
     return false;
   store.delete(CHECKOUT_COOKIE);
-  await clearBag();
-  return true;
+  return removeOrderedFromBag(await getOrderLines(order.id));
 }

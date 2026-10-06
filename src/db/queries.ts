@@ -24,6 +24,7 @@ import {
   stockMovements,
 } from "@/db/schema";
 import { type CatalogFilters, LOW_STOCK_THRESHOLD } from "@/lib/catalog";
+import { staleCutoff } from "@/lib/checkout";
 import { escapeLike, searchTerms } from "@/lib/search";
 import { HISTORY_STATUSES } from "@/lib/orders";
 import type {
@@ -59,7 +60,7 @@ const productColumns = {
   sku: products.sku,
   description: products.description,
   details: products.details,
-  // A product without a stock row counts as sold out.
+  // Every product has a stock row; coalesce is only a safety net.
   stock: sql<number>`coalesce(${productStock.quantity}, 0)`.mapWith(Number),
 };
 
@@ -495,8 +496,14 @@ export async function getInventoryItem(
   return row && toInventoryRow(row);
 }
 
-/** Catalog-wide stock counts for the admin overview, in one query. */
+/**
+ * Catalog-wide stock counts for the admin overview, in one query.
+ * `staleHolds` counts exactly what the sweep would pick up (past the grace
+ * period, not flagged); `needsReconcile` the checkouts it flagged because
+ * Stripe completed them without our webhook.
+ */
 export async function getInventoryCounts() {
+  const cutoff = staleCutoff().toISOString();
   const [row] = await db
     .select({
       products: sql<number>`count(*)`.mapWith(Number),
@@ -510,7 +517,13 @@ export async function getInventoryCounts() {
         ),
       staleHolds: sql<number>`(
         select count(*) from ${orders}
-        where ${orders.status} = 'pending' and ${orders.expiresAt} <= now()
+        where ${orders.status} = 'pending' and ${orders.expiresAt} < ${cutoff}
+          and ${orders.reconcileNeededAt} is null
+      )`.mapWith(Number),
+      needsReconcile: sql<number>`(
+        select count(*) from ${orders}
+        where ${orders.status} = 'pending'
+          and ${orders.reconcileNeededAt} is not null
       )`.mapWith(Number),
     })
     .from(products)

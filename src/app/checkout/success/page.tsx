@@ -39,7 +39,7 @@ const copy: Record<
   },
   failed: {
     title: "Payment didn't go through",
-    body: "Your bank declined or reversed the payment, so the order was cancelled and you haven't been charged. Your bag is still saved.",
+    body: "Your bank declined the payment, so the order was cancelled and you haven't been charged. The pieces below are back on sale if you'd like to try again.",
     icon: "problem",
   },
   expired: {

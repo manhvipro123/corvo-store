@@ -9,6 +9,7 @@ import {
   buildBag,
   parseBag,
   serializeBag,
+  withoutOrdered,
 } from "@/lib/bag";
 import type { Product } from "@/types/catalog";
 
@@ -57,9 +58,17 @@ export async function loadBag(extraIds: number[] = []) {
   return { bag: buildBag(items, products), products };
 }
 
-/** Empties the bag, e.g. once its checkout is paid. */
-export async function clearBag() {
-  const store = await cookies();
-  store.delete(BAG_COOKIE);
-  store.delete(BAG_COUNT_COOKIE);
+/**
+ * Takes a paid order's pieces out of the bag, keeping anything added since.
+ * Returns whether the bag changed.
+ */
+export async function removeOrderedFromBag(ordered: BagItem[]) {
+  const items = await readBag();
+  const next = withoutOrdered(items, ordered);
+  const changed =
+    next.length !== items.length ||
+    next.some((item, i) => item.quantity !== items[i].quantity);
+  if (changed)
+    await writeBag(next, await getBagProducts(next.map((i) => i.productId)));
+  return changed;
 }
