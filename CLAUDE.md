@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Scope
 
-A deliberately minimal ecommerce storefront. The database covers categories, products, stock and Better Auth email/password accounts with an admin role. There is a cookie-based bag, Stripe Checkout and an account order history (no refunds). Do not add social login, password reset, email verification, 2FA, refunds, wishlists, reviews, warehouses, product variants or admin management UI unless explicitly asked.
+A deliberately minimal ecommerce storefront. The database covers categories, products, stock and Better Auth email/password accounts with an admin role. There is a cookie-based bag, Stripe Checkout, an account order history (no refunds) and the shell of an admin area (`/admin`). Do not add social login, password reset, email verification, 2FA, refunds, wishlists, reviews, warehouses, product variants, an admin dashboard/analytics, product deletion, image uploads or finer-grained admin roles unless explicitly asked.
 
 ## Verifying changes
 
@@ -70,6 +70,11 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - Every session passes `managed_payments: { enabled: false }`: new Stripe accounts default to Managed Payments, which rejects shipping address collection. Don't enable `automatic_tax` (no tax registration).
 - Use a restricted key (`rk_`, Checkout Sessions: Write). The webhook route stays out of the proxy matcher; its signature is its auth.
 - Locally, the Stripe CLI needs explicit events: `stripe listen --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,checkout.session.expired --forward-to localhost:3000/api/stripe/webhook`, and its `whsec_…` goes in `STRIPE_WEBHOOK_SECRET`.
+
+## Admin
+
+- Three layers, and only the last two are security: `src/proxy.ts` (optimistic cookie redirect), `requireAdmin(path)` at the top of every page, and `requireAdmin(path)` as the first line of every admin Server Action, before reading the form or the DB. `admin/layout.tsx` only renders the nav; it is not a check. Server Actions are public POST endpoints callable from any page, so hiding admin links or the proxy protects nothing. `tests/admin-access.test.ts` covers `requireAdmin`, the layout and a guard in every admin `page.tsx`.
+- Admin sections are listed in `siteConfig.adminNav` and rendered with `SectionNav` (shared with the account area).
 
 ## Orders (account)
 
