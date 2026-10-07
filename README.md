@@ -77,4 +77,10 @@ tests/                  # Unit tests; tests/db/ needs a database
 
 ## Deployment
 
-`vercel.json` runs `/api/cron/release-expired` every 10 minutes to release stock held by abandoned checkouts. That schedule needs Vercel Pro (Hobby allows daily). Set `CRON_SECRET` in the project so the route accepts the call.
+Deployed on Vercel from `main`. `vercel.json` pins functions to `sin1`, next to the Neon database (`ap-southeast-1`), and runs `/api/cron/release-expired` daily (the Vercel Hobby limit) as a fallback for checkouts whose `expired` webhook never arrived.
+
+Project environment variables (see `.env.example`): `DATABASE_URL` (pooled), `NEXT_PUBLIC_SITE_URL` and `BETTER_AUTH_URL` (the production URL), a fresh `BETTER_AUTH_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `CRON_SECRET`. `NEXT_PUBLIC_SITE_URL` is inlined at build time, so redeploy after changing it.
+
+- Webhook: add a Stripe Dashboard endpoint for `https://<domain>/api/stripe/webhook` with the four `checkout.session.*` events listed above, and use that endpoint's `whsec_…` (not the `stripe listen` one). Preview deployments can't receive webhooks; test those locally.
+- Migrations don't run on deploy: run `npm run db:migrate` against the production database before pushing code that needs the new schema.
+- Never run `npm run db:seed` against a database that serves the live site: it truncates the catalog and, by cascade, orders.
