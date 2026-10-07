@@ -40,7 +40,7 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - Not in the DB on purpose: colour labels/swatches (`src/lib/colors.ts`, must match the `product_color` enum), editorial copy and homepage picks (`src/data/collections.ts`).
 - Schema changes: edit `schema.ts` → `npm run db:generate -- --name <change>` → commit `drizzle/` → `npm run db:migrate`. Never `drizzle-kit push`.
 - The `neon-http` driver has no interactive transactions; use `db.batch([...])` for atomic writes.
-- `npm run db:seed` truncates and reloads all catalog tables, plus `orders`/`order_items` (product ids restart): dev/test only. `TEST_DATABASE_URL` must be a separate Neon branch; `test:db` truncates and reseeds it on every run.
+- `npm run db:seed` truncates and reloads all catalog tables, plus `orders`/`order_items`/`stock_movements` (product ids restart): dev/test only, and see Deployment before running it. `TEST_DATABASE_URL` must be a separate Neon branch; `test:db` truncates and reseeds it on every run.
 - Scripts run outside Next (seed, test setup) must create their own Drizzle client; importing `src/db/index.ts` throws there (`server-only`).
 - `/`, `/products/[slug]`, `/new-arrivals` and `/categories` revalidate every 60s; `/products` and `/search` read live. After a catalog or stock write call `revalidateStorefront()` (`src/lib/storefront-cache.ts`) so the cached pages update at once.
 - In Drizzle single-table selects, columns render unqualified, so a correlated subquery like `products.category_id = categories.id` silently compares two `products` columns; use a join + `groupBy` instead. `ON DELETE RESTRICT` raises `23001`, not `23503`.
@@ -53,7 +53,7 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - No auth client in the browser: all auth flows are Server Actions calling `auth.api.*`. `nextCookies()` stays the last plugin, and `callbackURL` redirects go through `safeCallbackURL`.
 - A Server Action's re-render still sees the request's old cookie, so don't replace the current session mid-action (e.g. `changePassword({ revokeOtherSessions: true })`); call `revokeOtherSessions` separately.
 - Sign-in errors stay generic ("Email or password is incorrect") so they don't reveal which emails exist. Field rules live in `src/lib/auth-validation.ts`, shared by forms, actions and Better Auth's limits.
-- Better Auth's rate limiting covers only its HTTP handler, which `auth.api.*` from Server Actions skips, so every action that checks a password calls `tooManyAttempts` (`src/lib/auth-rate-limit.ts`) first. Emails are stored hashed, not plain text. Accepted trade-off: anyone who knows an email can lock it out of sign-in for 15 minutes.
+- Better Auth's rate limiting covers only its HTTP handler, which `auth.api.*` from Server Actions skips, so every action that checks a password calls `tooManyAttempts` (`src/lib/auth-rate-limit.ts`) first. Rate-limit keys store emails hashed, not plain text. Accepted trade-off: anyone who knows an email can lock it out of sign-in for 15 minutes.
 - Don't enable `cookieCache`: every session read hits the DB, so role and ban changes apply immediately.
 - After changing `src/lib/auth-options.ts`: `npm run auth:generate` → `npm run db:generate -- --name <change>` → `npm run db:migrate`.
 - `db:seed` never touches auth tables. Bootstrap the first admin with `npm run auth:make-admin -- <email>`.
@@ -84,8 +84,17 @@ Verify with `npm run lint && npm run typecheck && npm test && npm run build`; ru
 - Form rules live in `src/lib/admin-validation.ts`, shared by the client forms and the actions. Prices are entered in dollars and parsed as text to cents.
 - `setStock` (a physical count) writes only if the quantity still equals what the admin saw (`expected`), so a concurrent checkout reserve/release isn't overwritten; `adjustStock` adds a delta. Both record the admin from `requireAdmin`'s session, never from the form.
 - "Sold out" means available = 0. Units held by open checkouts were already deducted and come back if those checkouts end unpaid; the UI says so.
-- Expired checkouts whose `expired` webhook never came are released by `releaseStalePendingOrders`, run by `/api/cron/release-expired` (`Authorization: Bearer $CRON_SECRET`; `vercel.json` runs it daily, the most Vercel Hobby allows, since the `expired` webhook is the primary release path; it also prunes auth rate-limit counters) and by the "Release expired holds" button on `/admin/inventory`. A stale order whose session Stripe reports `complete` lost its `completed` webhook: the sweep never releases or marks it paid, it only sets `reconcile_needed_at` (shown on `/admin/inventory` and `/admin/orders`), and only a resent webhook settles it. The inventory banner, per-product holds and the sweep must share `staleCutoff()`.
+- Expired checkouts whose `expired` webhook never came are released by `releaseStalePendingOrders`, run by `/api/cron/release-expired` (`Authorization: Bearer $CRON_SECRET`, daily; it also prunes auth rate-limit counters) and by the "Release expired holds" button on `/admin/inventory`. A stale order whose session Stripe reports `complete` lost its `completed` webhook: the sweep never releases or marks it paid, it only sets `reconcile_needed_at` (shown on `/admin/inventory` and `/admin/orders`), and only a resent webhook settles it. The inventory banner, per-product holds and the sweep must share `staleCutoff()`.
 - Admins never change order status, prices or stock of an order: those stay webhook-only. The orders screens are read-only.
+
+## Deployment (Vercel)
+
+- Vercel Hobby, deployed from `main`. The canonical origin is `https://corvo.morningstar.io.vn`; `corvo-store.vercel.app` 308-redirects to it. `BETTER_AUTH_URL` and `NEXT_PUBLIC_SITE_URL` must both be that origin: Better Auth trusts only `BETTER_AUTH_URL` (no `trustedOrigins`), and `NEXT_PUBLIC_*` is inlined at build, so redeploy after changing it.
+- There is one Stripe webhook endpoint, on the canonical origin (Stripe doesn't follow redirects); its `whsec_` must come from the same Stripe account/sandbox as `STRIPE_SECRET_KEY`. Production still runs on the Stripe sandbox.
+- Functions are pinned to `sin1` (`vercel.json`) to sit next to the Neon database in `ap-southeast-1`; keep the two co-located.
+- Hobby allows crons at most daily, so don't add sub-daily schedules; the `expired` webhook is the primary stock-release path and the cron only a fallback.
+- Production shares the dev Neon database (`DATABASE_URL` in `.env.local`) for now. Never run `db:seed` or truncating scripts against it: it wipes live orders. Splitting off a production branch is planned before taking real orders.
+- Migrations don't run on deploy. Run `npm run db:migrate` before pushing code that needs them, so each migration must keep working with the code currently deployed (additive changes; drop or rename only in a later release).
 
 ## Orders (account)
 
