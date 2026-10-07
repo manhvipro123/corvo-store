@@ -1,4 +1,4 @@
-import { getStockStatus } from "@/lib/catalog";
+import { getStockStatus, stockLabel } from "@/lib/catalog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,11 +13,7 @@ export function StockStatus({
   className?: string;
 }) {
   const status = getStockStatus(stock);
-  const label = {
-    "in-stock": "In stock",
-    "low-stock": `Only ${stock} left`,
-    "sold-out": "Sold out",
-  }[status];
+  const label = stockLabel(stock);
 
   return (
     <p

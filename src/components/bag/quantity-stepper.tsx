@@ -17,7 +17,7 @@ export function QuantityStepper({
 }: {
   productId: number;
   quantity: number;
-  /** Live stock: + is disabled once reached. */
+  /** Live stock, capped per line: + is disabled once reached. */
   max: number;
   name: string;
 }) {

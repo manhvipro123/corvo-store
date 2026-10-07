@@ -10,6 +10,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 import type { Order } from "@/types/catalog";
@@ -80,7 +81,7 @@ export const products = pgTable(
   ],
 );
 
-/** One row per product; a missing row is treated as sold out. */
+/** One row per product (`createProduct` and migration 0004 guarantee it). */
 export const productStock = pgTable(
   "product_stock",
   {
@@ -131,6 +132,18 @@ export const orders = pgTable(
     /** When the reservation (and the Checkout Session) lapses. */
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    /**
+     * Set by the stale-checkout sweep when Stripe reports the session
+     * complete but no webhook has moved the order: it still holds stock and
+     * the sweep skips it from then on. Settled by resending the event.
+     */
+    reconcileNeededAt: timestamp("reconcile_needed_at", { withTimezone: true }),
+    /**
+     * Last time the stale-checkout sweep picked the order up. The sweep takes
+     * never-tried orders first, then the least recently tried, so orders it
+     * keeps failing on (e.g. Stripe errors) can't hold up the rest.
+     */
+    sweepAttemptedAt: timestamp("sweep_attempted_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [
@@ -141,6 +154,11 @@ export const orders = pgTable(
     ),
     index("orders_user_id_idx").on(t.userId),
     index("orders_status_expires_at_idx").on(t.status, t.expiresAt),
+    // One open checkout per user, even when two requests start one at once:
+    // a second session for the same bag could be paid as well.
+    uniqueIndex("orders_one_pending_per_user_idx")
+      .on(t.userId)
+      .where(sql`${t.status} = 'pending'`),
   ],
 );
 
@@ -175,6 +193,75 @@ export const stripeEvents = pgTable("stripe_events", {
   type: text("type").notNull(),
   createdAt: timestamps.createdAt,
 });
+
+/**
+ * Fixed-window attempt counters for the auth Server Actions (see
+ * `src/lib/auth-rate-limit.ts`). Not related to any other table; rows whose
+ * window ended long ago are pruned by the cron route.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    /** "<action>:<ip|account>:<value>"; emails are SHA-256 hashed. */
+    key: text("key").primaryKey(),
+    count: integer("count").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("rate_limits_window_start_idx").on(t.windowStart)],
+);
+
+/** Why a product's stock changed (see `stock_movements`). */
+export const stockMovementReason = pgEnum("stock_movement_reason", [
+  "initial",
+  "admin_set",
+  "admin_adjust",
+  "reserve",
+  "release",
+]);
+
+/**
+ * Append-only history of `product_stock.quantity`. Every change writes one
+ * row in the same statement or batch as the change itself, so per product
+ * `sum(delta)` always equals the current quantity.
+ */
+export const stockMovements = pgTable(
+  "stock_movements",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    delta: integer("delta").notNull(),
+    /** `product_stock.quantity` right after this change. */
+    quantityAfter: integer("quantity_after").notNull(),
+    reason: stockMovementReason("reason").notNull(),
+    /** The checkout that reserved or released the units. */
+    orderId: text("order_id").references(() => orders.id, {
+      onDelete: "set null",
+    }),
+    /** Admin who made a manual change. No FK: auth tables stay separate. */
+    actorUserId: text("actor_user_id"),
+    note: text("note"),
+    createdAt: timestamps.createdAt,
+  },
+  (t) => [
+    check("stock_movements_delta_non_zero", sql`${t.delta} <> 0`),
+    check(
+      "stock_movements_quantity_after_non_negative",
+      sql`${t.quantityAfter} >= 0`,
+    ),
+    check(
+      "stock_movements_note_length",
+      sql`${t.note} is null or char_length(${t.note}) <= 200`,
+    ),
+    index("stock_movements_product_id_created_at_idx").on(
+      t.productId,
+      t.createdAt.desc(),
+    ),
+  ],
+);
 
 export const categoriesRelations = relations(categories, ({ many }) => ({
   products: many(products),

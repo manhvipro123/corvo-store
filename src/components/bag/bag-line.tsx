@@ -5,7 +5,7 @@ import { QuantityStepper } from "@/components/bag/quantity-stepper";
 import { ProductImage } from "@/components/product/product-image";
 import { StockStatus } from "@/components/product/stock-status";
 import { MediaFrame } from "@/components/ui/media-frame";
-import type { BagLine as Line } from "@/lib/bag";
+import { type BagLine as Line, lineLimit } from "@/lib/bag";
 import { colors } from "@/lib/colors";
 import { formatPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -74,7 +74,7 @@ export function BagLine({
             <QuantityStepper
               productId={product.id}
               quantity={quantity}
-              max={product.stock}
+              max={lineLimit(product.stock)}
               name={product.name}
             />
           )}

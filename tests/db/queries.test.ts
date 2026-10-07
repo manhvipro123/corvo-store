@@ -5,6 +5,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultFilters } from "@/lib/catalog";
 
+import { deleteTestStock, setTestStock } from "./stock";
+
 const url = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!url)("catalog queries (test database)", () => {
@@ -172,9 +174,7 @@ describe.skipIf(!url)("catalog queries (test database)", () => {
   it("loads bag products by id with live price and stock", async () => {
     const shirt = await q.getProductBySlug("poplin-shirt-white");
     expect(shirt).toBeDefined();
-    await db.execute(
-      sql`update product_stock set quantity = 2 where product_id = ${shirt!.id}`,
-    );
+    await setTestStock(neon(url!), shirt!.id, 2);
     const [loaded] = await q.getBagProducts([shirt!.id, 999_999]);
     expect(loaded).toMatchObject({
       id: shirt!.id,
@@ -224,9 +224,8 @@ describe.skipIf(!url)("catalog queries (test database)", () => {
 
     // global-setup reseeds before every run, so these may delete freely.
     it("treats a product without a stock row as sold out", async () => {
-      await db.execute(
-        sql`delete from product_stock where product_id = (select id from products where slug = 'poplin-shirt-white')`,
-      );
+      const shirt = await q.getProductBySlug("poplin-shirt-white");
+      await deleteTestStock(neon(url!), shirt!.id);
       expect((await q.getProductBySlug("poplin-shirt-white"))?.stock).toBe(0);
     });
 

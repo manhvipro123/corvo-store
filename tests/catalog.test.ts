@@ -6,6 +6,7 @@ import {
   defaultFilters,
   filtersHref,
   getStockStatus,
+  stockLabel,
   parseFilters,
   sortLabel,
   toggleColor,
@@ -104,6 +105,17 @@ describe("getStockStatus", () => {
     [4, "in-stock"],
   ] as const)("%i units → %s", (stock, status) => {
     expect(getStockStatus(stock)).toBe(status);
+  });
+});
+
+describe("stockLabel", () => {
+  it.each([
+    [0, "Sold out"],
+    [1, "Only 1 left"],
+    [3, "Only 3 left"],
+    [4, "In stock"],
+  ] as const)("%i units → %s", (stock, label) => {
+    expect(stockLabel(stock)).toBe(label);
   });
 });
 

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   amountMatches,
+  STRIPE_MAX_TOTAL_CENTS,
   subtotalOf,
   toLineItems,
+  totalProblem,
   transitionFor,
 } from "@/lib/checkout";
 
@@ -53,14 +55,14 @@ describe("transitionFor (webhook events)", () => {
       "checkout.session.async_payment_succeeded",
       "paid",
       "paid",
-      ["processing"],
+      ["pending", "processing"],
       false,
     ],
     [
       "checkout.session.async_payment_failed",
       "unpaid",
       "failed",
-      ["processing"],
+      ["pending", "processing"],
       true,
     ],
     ["checkout.session.expired", "unpaid", "expired", ["pending"], true],
@@ -95,5 +97,18 @@ describe("amountMatches", () => {
     expect(amountMatches({ amount_total: null, currency: "usd" }, 2500)).toBe(
       false,
     );
+  });
+});
+
+describe("totalProblem", () => {
+  it("accepts totals Stripe can charge", () => {
+    expect(totalProblem(50)).toBeNull();
+    expect(totalProblem(STRIPE_MAX_TOTAL_CENTS)).toBeNull();
+  });
+
+  it("refuses totals below $0.50 or above Stripe's maximum", () => {
+    expect(totalProblem(0)).toMatch(/minimum/);
+    expect(totalProblem(49)).toMatch(/minimum/);
+    expect(totalProblem(STRIPE_MAX_TOTAL_CENTS + 1)).toMatch(/too large/);
   });
 });

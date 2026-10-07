@@ -8,13 +8,16 @@
 export function OrderDate({
   date,
   dateStyle = "medium",
+  timeStyle,
 }: {
   date: Date;
   dateStyle?: "medium" | "long";
+  /** Also show the time, e.g. in stock history. */
+  timeStyle?: "short";
 }) {
   return (
     <time dateTime={date.toISOString()} suppressHydrationWarning>
-      {new Intl.DateTimeFormat("en-US", { dateStyle }).format(date)}
+      {new Intl.DateTimeFormat("en-US", { dateStyle, timeStyle }).format(date)}
     </time>
   );
 }

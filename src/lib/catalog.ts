@@ -91,7 +91,7 @@ export function toggleColor(filters: CatalogFilters, color: ColorSlug) {
 }
 
 /** Below this many units the page shows "Only N left". */
-const LOW_STOCK_THRESHOLD = 3;
+export const LOW_STOCK_THRESHOLD = 3;
 
 export type StockStatus = "in-stock" | "low-stock" | "sold-out";
 
@@ -99,4 +99,12 @@ export function getStockStatus(stock: number): StockStatus {
   if (stock <= 0) return "sold-out";
   if (stock <= LOW_STOCK_THRESHOLD) return "low-stock";
   return "in-stock";
+}
+
+/** Customer-facing wording for a stock level, used everywhere it is shown. */
+export function stockLabel(stock: number) {
+  const status = getStockStatus(stock);
+  if (status === "sold-out") return "Sold out";
+  if (status === "low-stock") return `Only ${stock} left`;
+  return "In stock";
 }
